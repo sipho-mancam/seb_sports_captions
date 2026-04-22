@@ -47,6 +47,16 @@ function getScoreForTeam(scores, teamId, fallbackKey) {
   );
 }
 
+function getTeamScore(matchData, side, teamId) {
+  const nestedScore = matchData?.[side]?.score;
+
+  if (nestedScore) {
+    return nestedScore;
+  }
+
+  return getScoreForTeam(matchData?.score, teamId, side === 'homeTeam' ? 'home' : 'away');
+}
+
 function formatNumber(value) {
   return value !== null && value !== undefined ? value : '-';
 }
@@ -120,8 +130,8 @@ const MatchStatsPage = () => {
 
   const homeTeam = getTeam(matchStats.homeTeam, 'Home Team');
   const awayTeam = getTeam(matchStats.awayTeam, 'Away Team');
-  const homeScore = getScoreForTeam(matchStats.score, homeTeam.id, 'home');
-  const awayScore = getScoreForTeam(matchStats.score, awayTeam.id, 'away');
+  const homeScore = getTeamScore(matchStats, 'homeTeam', homeTeam.id);
+  const awayScore = getTeamScore(matchStats, 'awayTeam', awayTeam.id);
   const homeStats = getTeamStats(matchStats, 'homeTeam');
   const awayStats = getTeamStats(matchStats, 'awayTeam');
   const matchDate = matchStats.dateTime ? new Date(matchStats.dateTime).toLocaleDateString() : 'Date TBC';
@@ -142,19 +152,19 @@ const MatchStatsPage = () => {
           <div className="match-score">
             <div className="team home-team">
               <div className="team-name">{homeTeam.name}</div>
-              <div className="team-score">{homeScore?.finalScore || 0}</div>
+              <div className="team-score">{formatNumber(homeScore?.ftScore ?? homeScore?.finalScore ?? homeScore?.currentScore)}</div>
             </div>
 
             <div className="match-status">
               <div className="status">{matchStatus}</div>
               {matchStats.matchStatus === 'result' && (
-                <div className="half-time">HT: {homeScore?.htScore || 0} - {awayScore?.htScore || 0}</div>
+                <div className="half-time">HT: {formatNumber(homeScore?.htScore)} - {formatNumber(awayScore?.htScore)}</div>
               )}
             </div>
 
             <div className="team away-team">
               <div className="team-name">{awayTeam.name}</div>
-              <div className="team-score">{awayScore?.finalScore || 0}</div>
+              <div className="team-score">{formatNumber(awayScore?.ftScore ?? awayScore?.finalScore ?? awayScore?.currentScore)}</div>
             </div>
           </div>
         </div>
@@ -289,11 +299,9 @@ const StatsSection = ({ title, children }) => (
 // Reusable Stat Row Component
 const StatRow = ({ label, homeVal, awayVal, isPercentage = false }) => (
   <div className="stat-row">
+    <div className="stat-home">{formatNumber(homeVal)}</div>
     <div className="stat-label">{label}</div>
-    <div className="stat-values">
-      <div className="stat-home">{formatNumber(homeVal)}</div>
-      <div className="stat-away">{formatNumber(awayVal)}</div>
-    </div>
+    <div className="stat-away">{formatNumber(awayVal)}</div>
   </div>
 );
 
