@@ -1,22 +1,66 @@
-import { createContext, useContext, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 
 const AppFlowContext = createContext(null);
+const STORAGE_KEY = "sports-captions-app-flow";
 
 const initialState = {
   selectedSport: null,
   selectedSource: null,
+  selectedDataType: null,
+  activeProfile: null,
   selectedTournament: null,
   selectedCompetitionId: null,
   selectedSeasonId: null,
   selectedSeasonName: null,
+  selectedMatchId: null,
   selectedStatsType: null,
   statsSearchValue: "",
+  createdPages: [],
   loadedGraphics: [],
   mseResponse: null,
 };
 
+function getInitialState() {
+  if (typeof window === "undefined") {
+    return initialState;
+  }
+
+  try {
+    const storedValue = window.localStorage.getItem(STORAGE_KEY);
+    if (!storedValue) {
+      return initialState;
+    }
+
+    const parsedValue = JSON.parse(storedValue);
+    return {
+      ...initialState,
+      ...(parsedValue && typeof parsedValue === "object" ? parsedValue : {}),
+      mseResponse: null,
+    };
+  } catch {
+    return initialState;
+  }
+}
+
 export function AppFlowProvider({ children }) {
-  const [state, setState] = useState(initialState);
+  const [state, setState] = useState(getInitialState);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  }, [state]);
+
+  const setActiveProfile = useCallback(
+    (profile) =>
+      setState((prev) => ({
+        ...prev,
+        activeProfile: profile,
+      })),
+    []
+  );
 
   const api = useMemo(
     () => ({
@@ -26,10 +70,12 @@ export function AppFlowProvider({ children }) {
           ...prev,
           selectedSport: sport,
           selectedSource: null,
+          selectedDataType: null,
           selectedTournament: null,
           selectedCompetitionId: null,
           selectedSeasonId: null,
           selectedSeasonName: null,
+          selectedMatchId: null,
           selectedStatsType: null,
           statsSearchValue: "",
           loadedGraphics: [],
@@ -39,15 +85,29 @@ export function AppFlowProvider({ children }) {
         setState((prev) => ({
           ...prev,
           selectedSource: source,
+          selectedDataType: null,
           selectedTournament: null,
           selectedCompetitionId: null,
           selectedSeasonId: null,
           selectedSeasonName: null,
+          selectedMatchId: null,
           selectedStatsType: null,
           statsSearchValue: "",
           loadedGraphics: [],
           mseResponse: null,
         })),
+      setDataType: (dataType) =>
+        setState((prev) => ({
+          ...prev,
+          selectedDataType: dataType,
+        })),
+      setActiveProfile,
+      addCreatedPage: (page) =>
+        setState((prev) => ({
+          ...prev,
+          createdPages: [page, ...prev.createdPages],
+        })),
+
       setTournament: ({ tournament, competitionId, seasonId, seasonName }) =>
         setState((prev) => ({
           ...prev,
@@ -55,16 +115,24 @@ export function AppFlowProvider({ children }) {
           selectedCompetitionId: competitionId,
           selectedSeasonId: seasonId,
           selectedSeasonName: seasonName,
+          selectedMatchId: null,
           selectedStatsType: null,
           statsSearchValue: "",
           loadedGraphics: [],
           mseResponse: null,
+        })),
+      setSelectedMatchId: (matchId) =>
+        setState((prev) => ({
+          ...prev,
+          selectedMatchId: matchId,
         })),
       setStatsSelection: (statsType, searchValue) =>
         setState((prev) => ({
           ...prev,
           selectedStatsType: statsType,
           statsSearchValue: searchValue,
+          selectedDataType: null,
+          selectedMatchId: statsType === "Match Stats" ? prev.selectedMatchId : null,
           loadedGraphics: [],
           mseResponse: null,
         })),
@@ -74,7 +142,7 @@ export function AppFlowProvider({ children }) {
         setState((prev) => ({ ...prev, mseResponse: response })),
       resetFlow: () => setState(initialState),
     }),
-    [state]
+    [setActiveProfile, state]
   );
 
   return <AppFlowContext.Provider value={api}>{children}</AppFlowContext.Provider>;

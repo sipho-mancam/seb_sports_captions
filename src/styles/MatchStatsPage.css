@@ -11,11 +11,11 @@
   --match-text-soft: #475569;
   --match-shadow: 0 12px 28px rgba(15, 23, 42, 0.08);
   width: 100%;
-  max-width: 1400px;
-  margin: 0 auto;
+  max-width: none;
+  margin: 0;
   padding: 2rem;
   background: var(--match-page-bg);
-  height: calc(100vh - 88px);
+  height: 100%;
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -285,7 +285,7 @@
 @media (max-width: 1024px) {
   .match-stats-page {
     padding: 1.5rem;
-    height: calc(100vh - 84px);
+    min-height: calc(100vh - 84px);
   }
 
   .stats-container {
@@ -303,7 +303,7 @@
 
 @media (max-width: 768px) {
   .match-stats-page {
-    height: calc(100vh - 76px);
+    min-height: calc(100vh - 76px);
     gap: 1rem;
   }
 

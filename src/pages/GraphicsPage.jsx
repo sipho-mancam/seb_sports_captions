@@ -89,7 +89,7 @@ export default function GraphicsPage() {
         statsType: state.selectedStatsType,
         statsQuery: state.statsSearchValue,
         graphics: state.loadedGraphics,
-      });
+      }, state.activeProfile?.mseUrl);
       setMseResponse(response);
     } finally {
       setSending(false);

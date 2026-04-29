@@ -20,7 +20,7 @@ function getPrompt(statsType) {
 
 export default function StatsPage() {
   const navigate = useNavigate();
-  const { state, setStatsSelection } = useAppFlow();
+  const { state, setStatsSelection, setSelectedMatchId } = useAppFlow();
   const [statsType, setStatsType] = useState(state.selectedStatsType || "");
   const [query, setQuery] = useState(state.statsSearchValue || "");
   const [selectedDate, setSelectedDate] = useState("");
@@ -138,6 +138,7 @@ export default function StatsPage() {
                     className={`list-item ${query === match.label ? "selected" : ""}`}
                     onClick={() => {
                       setQuery(match.label);
+                      setSelectedMatchId(match.id);
                       setStatsSelection(statsType, match.label);
                       navigate(`/stats/${match.id}`);
                     }}
