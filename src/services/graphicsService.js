@@ -727,6 +727,11 @@ function normalizeProfile(profile) {
     name: profile.name || "",
     graphicManifestPath: profile.graphic_manifest_path || profile.graphicManifestPath || "",
     mseUrl: profile.mse_url || profile.mseUrl || "",
+    statsPageDefaultsPath:
+      profile.stats_page_defaults_path || profile.statsPageDefaultsPath || "",
+    imageAssetsPath: profile.image_assets_path || profile.imageAssetsPath || "",
+    pages: Array.isArray(profile.pages) ? profile.pages : [],
+    selectedShow: profile.selected_show ?? profile.selectedShow ?? null,
   };
 }
 
@@ -766,6 +771,10 @@ export async function createProfile(profile) {
       name: profile.name,
       graphic_manifest_path: profile.graphic_manifest_path,
       mse_url: profile.mse_url,
+      selected_show: profile.selected_show ?? null,
+      pages: Array.isArray(profile.pages) ? profile.pages : [],
+      stats_page_defaults_path: profile.stats_page_defaults_path || "",
+      image_assets_path: profile.image_assets_path || "",
     }),
   });
 

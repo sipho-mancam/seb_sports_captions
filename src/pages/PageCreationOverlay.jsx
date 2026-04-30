@@ -150,10 +150,8 @@ function humanizeLabel(value) {
 }
 
 function formatStatDescription(path) {
-  return path
-    .split(".")
-    .map((segment) => humanizeLabel(segment))
-    .join(" | ");
+  const segments = String(path || "").split(".").filter(Boolean);
+  return humanizeLabel(segments[segments.length - 1] || path || "");
 }
 
 function formatListItemValue(value) {
@@ -203,6 +201,163 @@ function buildTeamStatsList(selectedData, selectedStatPaths) {
 
 function isMatchStatsPayload(selectedData) {
   return Boolean(selectedData?.homeTeam?.teamStats || selectedData?.awayTeam?.teamStats);
+}
+
+function getDefaultMatchStatSuffix(path) {
+  return String(path || "").toLowerCase().includes("percent") ? "%" : "";
+}
+
+function getMatchStatSelectableItems(selectedData, selectedStatPaths) {
+  const homeStats = selectedData?.homeTeam?.teamStats || {};
+  const awayStats = selectedData?.awayTeam?.teamStats || {};
+
+  return selectedStatPaths.map((path) => ({
+    awayValue: formatListItemValue(getNestedValue(awayStats, path)),
+    defaultSuffix: getDefaultMatchStatSuffix(path),
+    homeValue: formatListItemValue(getNestedValue(homeStats, path)),
+    id: path,
+    label: formatStatDescription(path),
+    path,
+  }));
+}
+
+function getTeamLogoValue(team) {
+  return team?.abbreviation || team?.shortName || team?.name || team?.id || "";
+}
+
+function getTeamBadgeValue(team) {
+  return team?.abbreviation?.toUpperCase() || team?.shortName || team?.name || "";
+}
+
+function getTeamNameValue(team) {
+  return team?.shortName || team?.name || "";
+}
+
+function getTeamScoreValue(team) {
+  return (
+    team?.score?.finalScore ??
+    team?.score?.currentScore ??
+    team?.score?.ftScore ??
+    team?.score?.htScore ??
+    ""
+  );
+}
+
+function getPeriodLabelValue(selectedData) {
+  return humanizeLabel(selectedData?.period || selectedData?.matchStatus || "");
+}
+
+function getPageStateValue(selectedData) {
+  return selectedData?.matchStatus || selectedData?.period || "";
+}
+
+function getMatchStatsSelectionLimit(manifest) {
+  const fieldRows = manifest?.statistics_list?.fields;
+  return Array.isArray(fieldRows) && fieldRows.length ? fieldRows.length : 5;
+}
+
+function getMatchStatsSectionItemKeys(section, fallbackKeys = []) {
+  if (Array.isArray(section?.item) && section.item.length) {
+    return section.item;
+  }
+
+  if (Array.isArray(section?.list_item) && section.list_item.length) {
+    return section.list_item;
+  }
+
+  return fallbackKeys;
+}
+
+function appendMatchStatSuffix(value, suffix) {
+  if (!suffix) {
+    return value;
+  }
+
+  if (value === null || value === undefined || value === "" || value === "-") {
+    return value;
+  }
+
+  return `${value}${suffix}`;
+}
+
+function buildManifestLikeMatchStatsData(selectedData, selectedStatPaths, options = {}) {
+  const manifest = options.manifest;
+  const selectionLimit = getMatchStatsSelectionLimit(manifest);
+  const suffixByPath = options.suffixByPath || {};
+  const selectedItems = getMatchStatSelectableItems(selectedData, selectedStatPaths).slice(0, selectionLimit);
+  const homeTeam = selectedData?.homeTeam?.team || {};
+  const awayTeam = selectedData?.awayTeam?.team || {};
+  const matchHeaderKeys = getMatchStatsSectionItemKeys(manifest?.match_header, [
+    "home_badge",
+    "home_team_name",
+    "home_score",
+    "away_badge",
+    "away_team_name",
+    "away_score",
+    "period_label",
+  ]);
+  const statisticsKeys = getMatchStatsSectionItemKeys(manifest?.statistics_list, [
+    "description",
+    "home_suffix",
+    "home_value",
+    "away_value",
+    "away_suffix",
+  ]);
+  const teamLogoKeys = getMatchStatsSectionItemKeys(manifest?.team_logos, ["home_logo", "away_logo"]);
+  const pageStateKeys = getMatchStatsSectionItemKeys(manifest?.page_state, ["value"]);
+
+  return {
+    competition: selectedData?.competition ?? null,
+    season: selectedData?.season ?? null,
+    venue: selectedData?.venue ?? null,
+    match_header: {
+      data: matchHeaderKeys.reduce((result, itemKey) => {
+        const valueMap = {
+          away_badge: getTeamBadgeValue(awayTeam),
+          away_score: getTeamScoreValue(selectedData?.awayTeam),
+          away_team_name: getTeamNameValue(awayTeam),
+          home_badge: getTeamBadgeValue(homeTeam),
+          home_score: getTeamScoreValue(selectedData?.homeTeam),
+          home_team_name: getTeamNameValue(homeTeam),
+          period_label: getPeriodLabelValue(selectedData),
+        };
+        result[itemKey] = valueMap[itemKey] ?? "";
+        return result;
+      }, {}),
+      item: matchHeaderKeys,
+    },
+    page_state: {
+      data: pageStateKeys.reduce((result, itemKey) => {
+        result[itemKey] = itemKey === "value" ? getPageStateValue(selectedData) : "";
+        return result;
+      }, {}),
+      item: pageStateKeys,
+    },
+    statistics_list: {
+      data: selectedItems.map((item) => {
+        const suffix = suffixByPath[item.path] ?? item.defaultSuffix;
+        return statisticsKeys.reduce((result, itemKey) => {
+          const valueMap = {
+            away_suffix: "",
+            away_value: appendMatchStatSuffix(item.awayValue, suffix),
+            description: item.label,
+            home_suffix: "",
+            home_value: appendMatchStatSuffix(item.homeValue, suffix),
+          };
+          result[itemKey] = valueMap[itemKey] ?? "";
+          return result;
+        }, {});
+      }),
+      list_item: statisticsKeys,
+    },
+    team_logos: {
+      data: teamLogoKeys.reduce((result, itemKey) => {
+        result[itemKey] = "";
+        return result;
+      }, {}),
+      item: teamLogoKeys,
+    },
+  };
 }
 
 function isTeamSheetsPayload(selectedData) {
@@ -888,6 +1043,12 @@ function isFlatStandingsRow(entry) {
   );
 }
 
+function getStandingsTeamId(entry) {
+  return normalizeStandingsValue(
+    getValueByAliases(entry, ["team.id", "teamId", "team_id", "id"])
+  );
+}
+
 function getStandingsPools(selectedData) {
   const groups = Array.isArray(selectedData?.groups) ? selectedData.groups : [];
 
@@ -909,7 +1070,12 @@ function getStandingsPools(selectedData) {
         });
       }
 
-      poolMap.get(poolName).rows.push(entry);
+      const pool = poolMap.get(poolName);
+      const teamId = getStandingsTeamId(entry);
+
+      if (!teamId || !pool.rows.some((row) => getStandingsTeamId(row) === teamId)) {
+        pool.rows.push(entry);
+      }
     });
 
     return Array.from(poolMap.values()).map((pool) => ({
@@ -1005,12 +1171,21 @@ function buildStandingsColumnHeaders(manifest) {
   };
 }
 
-function buildStandingsPoolPayloads(selectedData, selectedDataType, manifest) {
+function getStandingsTitleValue(selectedData, options = {}) {
+  const roundValue = options.selectedRound || selectedData?.competition?.round;
+
+  if (options.requiresRoundSelection && roundValue !== null && roundValue !== undefined && roundValue !== "") {
+    return `Round ${roundValue}`;
+  }
+
+  return "Standing";
+}
+
+function buildStandingsPoolPayloads(selectedData, selectedDataType, manifest, options = {}) {
   const pools = getStandingsPools(selectedData);
   const standingFields = Array.isArray(manifest?.standings_list?.fields) ? manifest.standings_list.fields : [];
   const standingKeys = getManifestSectionItemKeys(manifest?.standings_list);
-  const titleValue =
-    selectedData?.classification?.name || selectedDataType?.type || selectedDataType?.dataType || "Standings";
+  const titleValue = getStandingsTitleValue(selectedData, options);
 
   return pools
     .map((pool, poolIndex) => {
@@ -1095,21 +1270,10 @@ function buildFilteredSelectedData(selectedData, selectedFieldPaths, options = {
   }
 
   if (isMatchStatsPayload(selectedData)) {
-    return {
-      competition: selectedData.competition ?? null,
-      season: selectedData.season ?? null,
-      round: selectedData.round ?? null,
-      venue: selectedData.venue ?? null,
-      homeTeam: {
-        team: selectedData.homeTeam?.team ?? null,
-        score: selectedData.homeTeam?.score ?? null,
-      },
-      awayTeam: {
-        team: selectedData.awayTeam?.team ?? null,
-        score: selectedData.awayTeam?.score ?? null,
-      },
-      teamStatsList: buildTeamStatsList(selectedData, selectedFieldPaths),
-    };
+    return buildManifestLikeMatchStatsData(selectedData, selectedFieldPaths, {
+      manifest: options.matchStatsManifest,
+      suffixByPath: options.matchStatsSuffixByPath,
+    });
   }
 
   if (isTeamSheetsPayload(selectedData)) {
@@ -1229,6 +1393,7 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
   const { state, setSelectedElementCollectionUri } = useAppFlow();
   const [selectedData, setSelectedData] = useState(null);
   const [selectedFieldPaths, setSelectedFieldPaths] = useState([]);
+  const [selectedMatchStatsSuffixByPath, setSelectedMatchStatsSuffixByPath] = useState({});
   const [shows, setShows] = useState([]);
   const [templates, setTemplates] = useState([]);
   const [selectedShowId, setSelectedShowId] = useState("");
@@ -1331,8 +1496,11 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
       return [];
     }
 
-    return buildStandingsPoolPayloads(selectedData, selectedDataType, selectedManifest);
-  }, [selectedData, selectedDataType, selectedManifest]);
+    return buildStandingsPoolPayloads(selectedData, selectedDataType, selectedManifest, {
+      requiresRoundSelection,
+      selectedRound,
+    });
+  }, [requiresRoundSelection, selectedData, selectedDataType, selectedManifest, selectedRound]);
 
   const topPlayerItems = useMemo(() => {
     if (!isTopPlayerScoresDataType(selectedDataType) || !selectedData) {
@@ -1393,6 +1561,16 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
       (left, right) => left.localeCompare(right)
     );
   }, [selectedData]);
+
+  const matchStatsSelectionLimit = useMemo(
+    () => getMatchStatsSelectionLimit(selectedManifest || preparedTemplate?.mapping),
+    [preparedTemplate?.mapping, selectedManifest]
+  );
+
+  const matchStatItems = useMemo(
+    () => getMatchStatSelectableItems(selectedData, teamStatPaths),
+    [selectedData, teamStatPaths]
+  );
 
   const previewMode = useMemo(() => {
     if (standingsPoolPayloads.length) {
@@ -1567,6 +1745,19 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
   );
 
   useEffect(() => {
+    setSelectedMatchStatsSuffixByPath((currentSuffixByPath) => {
+      if (!teamStatPaths.length) {
+        return {};
+      }
+
+      return teamStatPaths.reduce((result, path) => {
+        result[path] = currentSuffixByPath[path] ?? getDefaultMatchStatSuffix(path);
+        return result;
+      }, {});
+    });
+  }, [teamStatPaths]);
+
+  useEffect(() => {
     if (previewMode === "standings") {
       setSelectedFieldPaths([]);
       return;
@@ -1578,7 +1769,7 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
     }
 
     if (previewMode === "match-stats") {
-      setSelectedFieldPaths(teamStatPaths);
+      setSelectedFieldPaths(teamStatPaths.slice(0, matchStatsSelectionLimit));
       return;
     }
 
@@ -1602,7 +1793,15 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
     }
 
     setSelectedFieldPaths([]);
-  }, [groupColumns, headToHeadFormItems, headToHeadMatchItems, headToHeadSummaryItems, previewMode, teamStatPaths, topPlayerItems]);
+  }, [groupColumns, headToHeadFormItems, headToHeadMatchItems, headToHeadSummaryItems, matchStatsSelectionLimit, previewMode, teamStatPaths, topPlayerItems]);
+
+  useEffect(() => {
+    if (previewMode !== "match-stats") {
+      return;
+    }
+
+    setSelectedFieldPaths((currentPaths) => currentPaths.slice(0, matchStatsSelectionLimit));
+  }, [matchStatsSelectionLimit, previewMode]);
 
   const selectedFieldPathSet = useMemo(() => new Set(selectedFieldPaths), [selectedFieldPaths]);
 
@@ -1612,13 +1811,15 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
         headToHeadFormItems,
         headToHeadMatchItems,
         headToHeadSummaryItems,
+        matchStatsManifest: selectedManifest || preparedTemplate?.mapping,
+        matchStatsSuffixByPath: selectedMatchStatsSuffixByPath,
         previewMode,
         standingsPoolPayloads,
         teamSheetManifestSections,
         teamSheetSelection,
         topPlayerItems,
       }),
-    [headToHeadFormItems, headToHeadMatchItems, headToHeadSummaryItems, previewMode, selectedData, selectedFieldPaths, standingsPoolPayloads, teamSheetManifestSections, teamSheetSelection, topPlayerItems]
+    [headToHeadFormItems, headToHeadMatchItems, headToHeadSummaryItems, preparedTemplate?.mapping, previewMode, selectedData, selectedFieldPaths, selectedMatchStatsSuffixByPath, selectedManifest, standingsPoolPayloads, teamSheetManifestSections, teamSheetSelection, topPlayerItems]
   );
 
   const filteredGroupsTable = useMemo(() => {
@@ -1647,7 +1848,7 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
       return [];
     }
 
-    return Array.isArray(filteredSelectedData?.teamStatsList) ? filteredSelectedData.teamStatsList : [];
+    return Array.isArray(filteredSelectedData?.statistics_list?.data) ? filteredSelectedData.statistics_list.data : [];
   }, [filteredSelectedData, previewMode]);
 
   const filteredTopPlayerItems = useMemo(() => {
@@ -1742,7 +1943,7 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
     }
 
     if (previewMode === "standings") {
-      return selectedDataType?.dataType || selectedData?.classification?.name || "Standings";
+      return selectedDataType?.dataType || "Standings";
     }
 
     if (previewMode === "top-player-scores") {
@@ -1778,7 +1979,8 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
     if (previewMode === "standings") {
       const competitionName = selectedData?.competition?.name;
       const seasonName = selectedData?.season?.name;
-      return [competitionName, seasonName].filter(Boolean).join(" | ");
+      const titleValue = getStandingsTitleValue(selectedData, { requiresRoundSelection, selectedRound });
+      return [competitionName, seasonName, titleValue].filter(Boolean).join(" | ");
     }
 
     if (previewMode === "top-player-scores") {
@@ -1821,7 +2023,7 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
     }
 
     return segments.join(" | ");
-  }, [filteredSelectedData, previewMode, selectedData, selectedDataType?.type]);
+  }, [filteredSelectedData, previewMode, requiresRoundSelection, selectedData, selectedDataType?.type, selectedRound]);
 
   useEffect(() => {
     let mounted = true;
@@ -2555,7 +2757,7 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
                       <button
                         type="button"
                         className="page-creation-overlay__field-action"
-                        onClick={() => setSelectedFieldPaths(teamStatPaths)}
+                        onClick={() => setSelectedFieldPaths(teamStatPaths.slice(0, matchStatsSelectionLimit))}
                       >
                         Select all stats
                       </button>
@@ -2572,7 +2774,7 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
                   <div className="page-creation-overlay__preview-block">
                     <div className="page-creation-overlay__panel-header">
                       <h4>Team Stats List</h4>
-                      <span>{filteredTeamStatsList.length}</span>
+                      <span>{`${filteredTeamStatsList.length}/${matchStatsSelectionLimit}`}</span>
                     </div>
 
                     <div className="page-creation-overlay__stats-legend">
@@ -2583,44 +2785,57 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
 
                     <div className="page-creation-overlay__stats-list-wrap">
                       <div className="page-creation-overlay__stats-list">
-                        {teamStatPaths.map((path) => {
-                          const item = [
-                            formatListItemValue(getNestedValue(selectedData?.homeTeam?.teamStats || {}, path)),
-                            formatStatDescription(path),
-                            formatListItemValue(getNestedValue(selectedData?.awayTeam?.teamStats || {}, path)),
-                          ];
+                        {matchStatItems.map((item) => {
+                          const isSelected = selectedFieldPathSet.has(item.path);
+                          const hasReachedLimit = selectedFieldPaths.length >= matchStatsSelectionLimit;
+                          const suffixValue = selectedMatchStatsSuffixByPath[item.path] ?? item.defaultSuffix;
 
                           return (
                             <label
                               className={`page-creation-overlay__stats-item ${
-                                selectedFieldPathSet.has(path) ? "selected" : ""
+                                isSelected ? "selected" : ""
                               }`}
-                              key={path}
+                              key={item.path}
                             >
                               <input
                                 type="checkbox"
-                                checked={selectedFieldPathSet.has(path)}
+                                checked={isSelected}
+                                disabled={!isSelected && hasReachedLimit}
                                 onChange={() => {
                                   setSelectedFieldPaths((currentPaths) =>
-                                    currentPaths.includes(path)
-                                      ? currentPaths.filter((currentPath) => currentPath !== path)
-                                      : [...currentPaths, path]
+                                    currentPaths.includes(item.path)
+                                      ? currentPaths.filter((currentPath) => currentPath !== item.path)
+                                      : [...currentPaths, item.path].slice(0, matchStatsSelectionLimit)
                                   );
                                 }}
                               />
                               <span className="page-creation-overlay__stats-item-text">
                                 <span className="page-creation-overlay__stats-value page-creation-overlay__stats-value--home">
                                   <small>{homeTeamLabel}</small>
-                                  <strong>{item[0]}</strong>
+                                  <strong>{item.homeValue}</strong>
                                 </span>
                                 <span className="page-creation-overlay__stats-description">
                                   <small>Stat</small>
-                                  <strong>{item[1]}</strong>
-                                  <em>{`[${item[0]}, ${item[1]}, ${item[2]}]`}</em>
+                                  <strong>{item.label}</strong>
+                                  <em>{`[${item.homeValue}, ${item.label}, ${item.awayValue}]`}</em>
+                                  <select
+                                    value={suffixValue}
+                                    onChange={(event) => {
+                                      const nextValue = event.target.value;
+                                      setSelectedMatchStatsSuffixByPath((currentSuffixByPath) => ({
+                                        ...currentSuffixByPath,
+                                        [item.path]: nextValue,
+                                      }));
+                                    }}
+                                  >
+                                    <option value="">No suffix</option>
+                                    <option value="%">%</option>
+                                    <option value="*">*</option>
+                                  </select>
                                 </span>
                                 <span className="page-creation-overlay__stats-value page-creation-overlay__stats-value--away">
                                   <small>{awayTeamLabel}</small>
-                                  <strong>{item[2]}</strong>
+                                  <strong>{item.awayValue}</strong>
                                 </span>
                               </span>
                             </label>

@@ -8,11 +8,25 @@ import {
 } from "../services/graphicsService";
 
 const defaultProfileForm = {
-  name: "default",
-  graphic_manifest_path:
-    "C:/Users/SiphoMancam/Documents/Programming/SportsCaptionsServer/graphic_manifest",
+  name: "investec",
+  graphic_manifest_path: "",
   mse_url: "http://localhost:8580/directory/",
+  selected_show: null,
+  pages: [],
+  stats_page_defaults_path: "",
+  image_assets_path: "",
 };
+
+function getSelectedFilePath(file) {
+  return file?.path || "";
+}
+
+function createDirectoryPickerAttributes() {
+  return {
+    directory: "",
+    webkitdirectory: "",
+  };
+}
 
 function formatCreatedAt(value) {
   try {
@@ -34,6 +48,51 @@ export default function MatchProfilePanel() {
   const [loadingProfiles, setLoadingProfiles] = useState(false);
   const [profilesError, setProfilesError] = useState("");
   const [activatingProfileName, setActivatingProfileName] = useState("");
+
+  const updateProfileFormFromActive = (active) => {
+    setProfileForm({
+      name: active?.name || defaultProfileForm.name,
+      graphic_manifest_path: active?.graphicManifestPath || "",
+      mse_url: active?.mseUrl || defaultProfileForm.mse_url,
+      selected_show: active?.selectedShow ?? null,
+      pages: Array.isArray(active?.pages) ? active.pages : [],
+      stats_page_defaults_path: active?.statsPageDefaultsPath || "",
+      image_assets_path: active?.imageAssetsPath || "",
+    });
+  };
+
+  const onSelectFilePath = (fieldName) => (event) => {
+    const selectedFile = event.target.files?.[0];
+    const selectedPath = getSelectedFilePath(selectedFile);
+
+    if (!selectedPath) {
+      return;
+    }
+
+    setProfileForm((current) => ({
+      ...current,
+      [fieldName]: selectedPath,
+    }));
+
+    event.target.value = "";
+  };
+
+  const onSelectDirectoryPath = (fieldName) => (event) => {
+    const selectedFile = event.target.files?.[0];
+    const selectedPath = getSelectedFilePath(selectedFile);
+
+    if (!selectedPath) {
+      return;
+    }
+
+    const normalizedPath = selectedPath.replace(/[\\/][^\\/]+$/, "");
+    setProfileForm((current) => ({
+      ...current,
+      [fieldName]: normalizedPath,
+    }));
+
+    event.target.value = "";
+  };
 
   useEffect(() => {
     let mounted = true;
@@ -77,11 +136,7 @@ export default function MatchProfilePanel() {
       const active = await activateProfile(createdProfile.name);
       setActiveProfile(active);
       setIsCreatingProfile(false);
-      setProfileForm({
-        name: active.name,
-        graphic_manifest_path: active.graphicManifestPath,
-        mse_url: active.mseUrl,
-      });
+      updateProfileFormFromActive(active);
     } catch (error) {
       setCreateError(error.message || "Failed to create profile.");
     }
@@ -121,11 +176,7 @@ export default function MatchProfilePanel() {
     try {
       const active = await activateProfile(profileName);
       setActiveProfile(active);
-      setProfileForm({
-        name: active.name,
-        graphic_manifest_path: active.graphicManifestPath,
-        mse_url: active.mseUrl,
-      });
+      updateProfileFormFromActive(active);
       setIsProfilePickerOpen(false);
     } catch (error) {
       setProfilesError(error.message || "Failed to activate profile.");
@@ -178,6 +229,14 @@ export default function MatchProfilePanel() {
           <span>MSE URL</span>
           <strong>{activeProfile?.mseUrl || "No active profile selected"}</strong>
         </div>
+        <div>
+          <span>Stats Defaults Path</span>
+          <strong>{activeProfile?.statsPageDefaultsPath || "Not configured"}</strong>
+        </div>
+        <div>
+          <span>Image Assets Path</span>
+          <strong>{activeProfile?.imageAssetsPath || "Not configured"}</strong>
+        </div>
       </div>
 
       {!activeProfile ? (
@@ -205,13 +264,14 @@ export default function MatchProfilePanel() {
             <input
               type="text"
               value={profileForm.graphic_manifest_path}
-              onChange={(event) =>
-                setProfileForm((current) => ({
-                  ...current,
-                  graphic_manifest_path: event.target.value,
-                }))
-              }
+              readOnly
+              placeholder="Choose the graphics manifest directory"
               required
+            />
+            <input
+              type="file"
+              {...createDirectoryPickerAttributes()}
+              onChange={onSelectDirectoryPath("graphic_manifest_path")}
             />
           </label>
 
@@ -224,6 +284,38 @@ export default function MatchProfilePanel() {
                 setProfileForm((current) => ({ ...current, mse_url: event.target.value }))
               }
               required
+            />
+          </label>
+
+          <label>
+            <span>Stats Page Defaults Path</span>
+            <input
+              type="text"
+              value={profileForm.stats_page_defaults_path}
+              readOnly
+              placeholder="Choose the stats defaults file"
+              required
+            />
+            <input
+              type="file"
+              accept=".json,application/json"
+              onChange={onSelectFilePath("stats_page_defaults_path")}
+            />
+          </label>
+
+          <label>
+            <span>Image Assets Path</span>
+            <input
+              type="text"
+              value={profileForm.image_assets_path}
+              readOnly
+              placeholder="Choose the image assets directory"
+              required
+            />
+            <input
+              type="file"
+              {...createDirectoryPickerAttributes()}
+              onChange={onSelectDirectoryPath("image_assets_path")}
             />
           </label>
 
