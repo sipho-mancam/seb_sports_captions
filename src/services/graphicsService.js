@@ -240,8 +240,12 @@ function getTemplateBucketUrl(payload) {
   return getEntryUri(templateBucket);
 }
 
-function normalizeTemplate(template, index, showName = "", bucketName = "") {
+function normalizeTemplate(template, index, showName = "", bucketName = "", elementCollectionUri = "") {
   const templateTitle = template?.title || template?.template?.title || template?.raw?.title;
+  const normalizedRaw =
+    elementCollectionUri && template && typeof template === "object"
+      ? { ...template, elementCollectionUri }
+      : template;
 
   return {
     id: template.id || template.name || template.templateName || getEntryUri(template) || `template-${index + 1}`,
@@ -254,8 +258,81 @@ function normalizeTemplate(template, index, showName = "", bucketName = "") {
     uri: getEntryUri(template),
     showName,
     bucketName,
-    raw: template,
+    elementCollectionUri,
+    raw: normalizedRaw,
   };
+}
+
+function getAtomLinkHrefFromXml(xml, rel) {
+  if (typeof xml !== "string" || !xml.trim() || !rel) {
+    return "";
+  }
+
+  const escapedRel = rel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const directMatch = xml.match(new RegExp(`<link[^>]*href="([^"]+)"[^>]*rel="${escapedRel}"[^>]*\/?>`, "i"));
+  if (directMatch?.[1]) {
+    return directMatch[1];
+  }
+
+  const reverseMatch = xml.match(new RegExp(`<link[^>]*rel="${escapedRel}"[^>]*href="([^"]+)"[^>]*\/?>`, "i"));
+  return reverseMatch?.[1] || "";
+}
+
+function toElementCollectionUri(uri) {
+  if (typeof uri !== "string" || !uri.trim()) {
+    return "";
+  }
+
+  try {
+    const parsedUrl = new URL(uri);
+
+    if (parsedUrl.pathname.includes("/element_collection/")) {
+      return parsedUrl.toString();
+    }
+
+    if (!parsedUrl.pathname.includes("/template_collection/")) {
+      return "";
+    }
+
+    parsedUrl.pathname = parsedUrl.pathname.replace("/template_collection/", "/element_collection/");
+    parsedUrl.pathname = parsedUrl.pathname.replace(/\/mastertemplates\/[^/]+$/i, "/elements");
+    return parsedUrl.toString();
+  } catch {
+    return "";
+  }
+}
+
+function getElementCollectionUri(payload, fallbackTemplate) {
+  const candidateUris = [
+    payload?.elementCollectionUri,
+    payload?.element_collection_uri,
+    payload?.collectionUri,
+    getAtomLinkHrefFromXml(payload?.templateXml, "self"),
+    getAtomLinkHrefFromXml(payload?.template_xml, "self"),
+    fallbackTemplate?.elementCollectionUri,
+    fallbackTemplate?.uri,
+    fallbackTemplate?.raw?.uri,
+    fallbackTemplate?.raw?.href,
+  ].filter(Boolean);
+
+  for (const candidateUri of candidateUris) {
+    if (candidateUri.includes("/element_collection/")) {
+      return candidateUri;
+    }
+
+    const derivedUri = toElementCollectionUri(candidateUri);
+    if (derivedUri) {
+      return derivedUri;
+    }
+  }
+
+  return "";
+}
+
+function getPreparedTemplateMapping(payload) {
+  const mappingCandidates = [payload?.mapping, payload?.template, payload?.fieldMapping, payload?.fields];
+
+  return mappingCandidates.find((candidate) => candidate && typeof candidate === "object" && !Array.isArray(candidate)) || {};
 }
 
 function normalizePreparedTemplate(payload, fallbackTemplate) {
@@ -265,6 +342,16 @@ function normalizePreparedTemplate(payload, fallbackTemplate) {
     payload?.raw?.title ||
     fallbackTemplate?.title ||
     fallbackTemplate?.raw?.title;
+  const elementCollectionUri = getElementCollectionUri(payload, fallbackTemplate);
+  const modelUri =
+    payload?.modelUri ||
+    payload?.model_uri ||
+    payload?.pageModelUri ||
+    payload?.vdfUrl ||
+    payload?.vdf_url ||
+    getAtomLinkHrefFromXml(payload?.templateXml, "alternate") ||
+    getAtomLinkHrefFromXml(payload?.template_xml, "alternate") ||
+    "";
 
   return {
     templateName:
@@ -275,17 +362,15 @@ function normalizePreparedTemplate(payload, fallbackTemplate) {
       fallbackTemplate?.templateName ||
       fallbackTemplate?.name ||
       "Template",
-    elementCollectionUri:
-      payload?.elementCollectionUri || payload?.element_collection_uri || payload?.collectionUri || "",
-    modelUri: payload?.modelUri || payload?.model_uri || payload?.pageModelUri || "",
-    mapping:
-      payload?.mapping || payload?.template || payload?.fields || payload?.fieldMapping || payload || {},
+    elementCollectionUri,
+    modelUri,
+    mapping: getPreparedTemplateMapping(payload),
     raw: payload,
   };
 }
 function extractValue(source, key, index = 0) {
   if (source === null || source === undefined) {
-    return "";
+    return undefined;
   }
 
   if (typeof key !== "string") {
@@ -295,10 +380,10 @@ function extractValue(source, key, index = 0) {
   if (Array.isArray(source)) {
     const item = source[index];
     if (item === undefined) {
-      return "";
+      return undefined;
     }
     if (item && typeof item === "object") {
-      return item[key] ?? item.value ?? "";
+      return item[key] ?? item.value;
     }
     return item;
   }
@@ -312,17 +397,116 @@ function extractValue(source, key, index = 0) {
     if (dottedValue !== undefined) {
       return dottedValue;
     }
+
+    return undefined;
   }
 
   return source;
 }
 
+function decodeHtmlEntities(value) {
+  return value
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&apos;/gi, "'")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&#(\d+);/g, (_, codePoint) => String.fromCodePoint(Number(codePoint)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, codePoint) => String.fromCodePoint(parseInt(codePoint, 16)))
+    .replace(/&([a-z][a-z0-9]+);/gi, (match, entityName) => {
+      const namedEntities = {
+        Aacute: "A",
+        aacute: "a",
+        Acirc: "A",
+        acirc: "a",
+        Agrave: "A",
+        agrave: "a",
+        Aring: "A",
+        aring: "a",
+        Atilde: "A",
+        atilde: "a",
+        Auml: "A",
+        auml: "a",
+        Ccedil: "C",
+        ccedil: "c",
+        Eacute: "E",
+        eacute: "e",
+        Ecirc: "E",
+        ecirc: "e",
+        Egrave: "E",
+        egrave: "e",
+        Euml: "E",
+        euml: "e",
+        Iacute: "I",
+        iacute: "i",
+        Icirc: "I",
+        icirc: "i",
+        Igrave: "I",
+        igrave: "i",
+        Iuml: "I",
+        iuml: "i",
+        Ntilde: "N",
+        ntilde: "n",
+        Oacute: "O",
+        oacute: "o",
+        Ocirc: "O",
+        ocirc: "o",
+        Ograve: "O",
+        ograve: "o",
+        Oslash: "O",
+        oslash: "o",
+        Otilde: "O",
+        otilde: "o",
+        Ouml: "O",
+        ouml: "o",
+        Uacute: "U",
+        uacute: "u",
+        Ucirc: "U",
+        ucirc: "u",
+        Ugrave: "U",
+        ugrave: "u",
+        Uuml: "U",
+        uuml: "u",
+        Yacute: "Y",
+        yacute: "y",
+        yuml: "y",
+        szlig: "ss",
+      };
+
+      return namedEntities[entityName] ?? match;
+    });
+}
+
+function normalizeFieldStringValue(value) {
+  const decodedValue = decodeHtmlEntities(String(value));
+
+  return decodedValue
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^\x20-\x7E]/g, "")
+    .trim();
+}
+
 function setFieldValue(fieldValues, fieldId, value) {
-  if (fieldId === null || fieldId === undefined || fieldId === "") {
+  if (fieldId === null || fieldId === undefined || fieldId === "" || value === null || value === undefined) {
     return;
   }
 
-  fieldValues[String(fieldId)] = value ?? "";
+  if (Array.isArray(value) || (typeof value === "object" && value !== null)) {
+    return;
+  }
+
+  fieldValues[String(fieldId)] = normalizeFieldStringValue(value);
+}
+
+function getManifestSectionData(sourceValue) {
+  if (sourceValue && typeof sourceValue === "object" && "data" in sourceValue) {
+    return sourceValue.data;
+  }
+
+  return sourceValue;
 }
 
 export function buildFieldValuesFromTemplate(mapping, selectedData) {
@@ -342,24 +526,35 @@ export function buildFieldValuesFromTemplate(mapping, selectedData) {
       const delimiter = config.delimiter || " ";
       const combinedValue = config.scores
         .map((scoreKey, index) => extractValue(selectedData, scoreKey, index))
-        .filter((value) => value !== "")
+        .filter((value) => value !== "" && value !== undefined && value !== null)
         .join(delimiter);
       setFieldValue(fieldValues, config.field, combinedValue);
       return;
     }
 
-    if (Array.isArray(config.list) && Array.isArray(config.list_item)) {
-      const sourceList = extractValue(selectedData, key);
+    const listFields = Array.isArray(config.list)
+      ? config.list
+      : Array.isArray(config.fields) && Array.isArray(config.fields[0])
+        ? config.fields
+        : null;
+    const listItemKeys = Array.isArray(config.list_item)
+      ? config.list_item
+      : Array.isArray(config.item)
+        ? config.item
+        : null;
+
+    if (Array.isArray(listFields) && Array.isArray(listItemKeys)) {
+      const sourceList = getManifestSectionData(extractValue(selectedData, key));
       const rows = Array.isArray(sourceList) ? sourceList : [];
 
-      config.list.forEach((fieldRow, rowIndex) => {
+      listFields.forEach((fieldRow, rowIndex) => {
         if (!Array.isArray(fieldRow)) {
           return;
         }
 
         fieldRow.forEach((fieldId, columnIndex) => {
           const sourceItem = rows[rowIndex];
-          const sourceKey = config.list_item[columnIndex];
+          const sourceKey = listItemKeys[columnIndex];
           let value = "";
 
           if (Array.isArray(sourceItem)) {
@@ -372,6 +567,34 @@ export function buildFieldValuesFromTemplate(mapping, selectedData) {
 
           setFieldValue(fieldValues, fieldId, value);
         });
+      });
+
+      return;
+    }
+
+    const singleFields = Array.isArray(config.fields) ? config.fields : null;
+    const singleItemKeys = Array.isArray(config.item)
+      ? config.item
+      : Array.isArray(config.list_item)
+        ? config.list_item
+        : null;
+
+    if (Array.isArray(singleFields) && Array.isArray(singleItemKeys)) {
+      const sourceItem = getManifestSectionData(extractValue(selectedData, key));
+
+      singleFields.forEach((fieldId, index) => {
+        const sourceKey = singleItemKeys[index];
+        let value = "";
+
+        if (Array.isArray(sourceItem)) {
+          value = sourceItem[index] ?? "";
+        } else if (sourceItem && typeof sourceItem === "object") {
+          value = sourceItem[sourceKey] ?? sourceItem.value ?? "";
+        } else if (sourceItem !== undefined) {
+          value = sourceItem;
+        }
+
+        setFieldValue(fieldValues, fieldId, value);
       });
     }
   });
@@ -395,7 +618,10 @@ export async function getGraphicShows() {
 
 export async function getGraphicTemplates(showEntry) {
   if (!showEntry) {
-    return [];
+    return {
+      elementCollectionUri: "",
+      templates: [],
+    };
   }
 
   const bucketResponse = await fetch(`${BASE_URL}/api/mse/shows/buckets`, {
@@ -410,9 +636,13 @@ export async function getGraphicTemplates(showEntry) {
 
   const bucketPayload = await bucketResponse.json();
   const templateBucketUrl = getTemplateBucketUrl(bucketPayload);
+  const elementCollectionUri = bucketPayload?.buckets?.elements || "";
 
   if (!templateBucketUrl) {
-    return [];
+    return {
+      elementCollectionUri,
+      templates: [],
+    };
   }
 
   const bucketEntriesResponse = await fetch(
@@ -426,9 +656,12 @@ export async function getGraphicTemplates(showEntry) {
   const bucketEntriesPayload = await bucketEntriesResponse.json();
   const entries = pickFirstArray(bucketEntriesPayload, ["entries", "bucketEntries", "items", "data"]);
 
-  return entries.map((entry, index) =>
-    normalizeTemplate(entry, index, getEntryLabel(showEntry), "templates")
-  );
+  return {
+    elementCollectionUri,
+    templates: entries.map((entry, index) =>
+      normalizeTemplate(entry, index, getEntryLabel(showEntry), "templates", elementCollectionUri)
+    ),
+  };
 }
 
 export async function getGraphicManifest(manifestId) {

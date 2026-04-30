@@ -218,6 +218,145 @@ function isTopPlayerScoresDataType(selectedDataType) {
   return combinedLabel.includes("top 10") || combinedLabel.includes("top10");
 }
 
+function isHeadToHeadPayload(selectedData) {
+  return Boolean(selectedData?.headToHeadStats && selectedData?.teams?.homeTeam && selectedData?.teams?.awayTeam);
+}
+
+function isHeadToHeadTeamComparison(value) {
+  return isRecord(value) && (Object.prototype.hasOwnProperty.call(value, "homeTeam") || Object.prototype.hasOwnProperty.call(value, "awayTeam"));
+}
+
+function collectHeadToHeadSummaryPaths(source, parentPath = "", paths = []) {
+  if (!isRecord(source)) {
+    return paths;
+  }
+
+  Object.entries(source).forEach(([key, value]) => {
+    const nextPath = parentPath ? `${parentPath}.${key}` : key;
+
+    if (Array.isArray(value)) {
+      return;
+    }
+
+    if (isHeadToHeadTeamComparison(value)) {
+      if (Object.prototype.hasOwnProperty.call(value, "homeTeam")) {
+        paths.push(`${nextPath}.homeTeam`);
+      }
+
+      if (Object.prototype.hasOwnProperty.call(value, "awayTeam")) {
+        paths.push(`${nextPath}.awayTeam`);
+      }
+
+      return;
+    }
+
+    if (isRecord(value)) {
+      collectHeadToHeadSummaryPaths(value, nextPath, paths);
+      return;
+    }
+
+    paths.push(nextPath);
+  });
+
+  return paths;
+}
+
+function buildHeadToHeadSummaryItems(selectedData) {
+  const headToHeadStats = selectedData?.headToHeadStats || {};
+
+  return collectHeadToHeadSummaryPaths(headToHeadStats).map((path) => ({
+    id: `summary:${path}`,
+    path,
+    label: formatStatDescription(path),
+    value: formatListItemValue(getNestedValue(headToHeadStats, path)),
+  }));
+}
+
+function buildHeadToHeadMatchItems(selectedData) {
+  return (selectedData?.headToHeadStats?.last5Matches || []).map((match, index) => ({
+    id: `last5Matches:${String(match?.matchId ?? index + 1)}`,
+    path: "last5Matches",
+    matchId: match?.matchId ?? `match-${index + 1}`,
+    compName: match?.compName || selectedData?.matchInfo?.competition?.seasonName || "Competition",
+    matchDate: match?.matchDate || "-",
+    venue: match?.venue || selectedData?.matchInfo?.venue?.name || "-",
+    winner: match?.winner || "-",
+    homeTeamScore: formatListItemValue(match?.homeTeamScore),
+    awayTeamScore: formatListItemValue(match?.awayTeamScore),
+    raw: match,
+  }));
+}
+
+function buildHeadToHeadFormItems(selectedData) {
+  const homeTeamName = selectedData?.teams?.homeTeam?.name || "Home Team";
+  const awayTeamName = selectedData?.teams?.awayTeam?.name || "Away Team";
+
+  return [
+    ["homeTeam", homeTeamName, selectedData?.headToHeadStats?.form?.homeTeam || []],
+    ["awayTeam", awayTeamName, selectedData?.headToHeadStats?.form?.awayTeam || []],
+  ].flatMap(([teamKey, teamLabel, items]) =>
+    items.map((entry, index) => ({
+      id: `form.${teamKey}:${String(entry?.matchId ?? index + 1)}`,
+      teamKey,
+      teamLabel,
+      result: entry?.result || "-",
+      oppositionTeamName: entry?.oppositionTeamName || "Opponent",
+      matchDate: entry?.matchDate || "-",
+      matchId: entry?.matchId ?? `form-${teamKey}-${index + 1}`,
+      raw: entry,
+    }))
+  );
+}
+
+function buildFilteredHeadToHeadData(selectedData, selectedFieldPaths, options = {}) {
+  const selectedPathSet = new Set(selectedFieldPaths);
+  const headToHeadStats = selectedData?.headToHeadStats || {};
+  const filteredHeadToHeadStats = {};
+
+  (options.summaryItems || []).forEach((item) => {
+    if (!selectedPathSet.has(item.id)) {
+      return;
+    }
+
+    setNestedValue(filteredHeadToHeadStats, item.path, getNestedValue(headToHeadStats, item.path));
+  });
+
+  const selectedMatches = (options.matchItems || [])
+    .filter((item) => selectedPathSet.has(item.id))
+    .map((item) => item.raw);
+
+  if (selectedMatches.length) {
+    filteredHeadToHeadStats.last5Matches = selectedMatches;
+  }
+
+  const selectedHomeForm = (options.formItems || [])
+    .filter((item) => item.teamKey === "homeTeam" && selectedPathSet.has(item.id))
+    .map((item) => item.raw);
+
+  const selectedAwayForm = (options.formItems || [])
+    .filter((item) => item.teamKey === "awayTeam" && selectedPathSet.has(item.id))
+    .map((item) => item.raw);
+
+  if (selectedHomeForm.length || selectedAwayForm.length) {
+    filteredHeadToHeadStats.form = {};
+
+    if (selectedHomeForm.length) {
+      filteredHeadToHeadStats.form.homeTeam = selectedHomeForm;
+    }
+
+    if (selectedAwayForm.length) {
+      filteredHeadToHeadStats.form.awayTeam = selectedAwayForm;
+    }
+  }
+
+  return {
+    matchId: selectedData?.matchId ?? null,
+    matchInfo: selectedData?.matchInfo ?? null,
+    teams: selectedData?.teams ?? null,
+    headToHeadStats: filteredHeadToHeadStats,
+  };
+}
+
 function getTopPlayerName(entry) {
   return (
     entry?.player?.knownName ||
@@ -345,8 +484,29 @@ function getTeamSheetSelectionId(scope, teamKey, entity, index) {
   return teamKey ? `${teamKey}.${scope}.${entityId}` : `${scope}.${entityId}`;
 }
 
+function getPersonDisplayName(person, fallback = "Person") {
+  return (
+    person?.knownName ||
+    person?.name ||
+    [person?.firstName, person?.lastName || person?.surname].filter(Boolean).join(" ") ||
+    fallback
+  );
+}
+
 function getPlayerDisplayName(player) {
-  return player?.knownName || player?.name || [player?.firstName, player?.lastName].filter(Boolean).join(" ") || "Player";
+  return getPersonDisplayName(player, "Player");
+}
+
+function getPersonNameParts(person, fallback = "Person") {
+  const displayName = getPersonDisplayName(person, fallback).trim();
+  const nameParts = displayName.split(/\s+/).filter(Boolean);
+
+  return {
+    displayName,
+    name: person?.firstName || nameParts[0] || "",
+    surname:
+      person?.lastName || person?.surname || person?.familyName || nameParts.slice(1).join(" ") || "",
+  };
 }
 
 function getTeamLabel(teamData, fallback) {
@@ -375,94 +535,542 @@ function sortPlayersByShirtNumber(players) {
   });
 }
 
-function buildTeamSheetSelectableItems(selectedData) {
-  const items = [];
+function getTeamSheetSectionConfig(config, fallbackItemKeys = []) {
+  if (!isRecord(config)) {
+    return {
+      fields: [],
+      itemKeys: fallbackItemKeys,
+    };
+  }
 
-  const addPlayerGroup = (teamKey, teamData, sectionKey, sectionTitle, predicate) => {
-    const teamLabel = getTeamLabel(teamData, teamKey === "homeTeam" ? "Home" : "Away");
-    const players = sortPlayersByShirtNumber((teamData?.players || []).filter(predicate));
+  return {
+    fields: Array.isArray(config.list) ? config.list : Array.isArray(config.fields) ? config.fields : [],
+    itemKeys:
+      Array.isArray(config.list_item) ? config.list_item : Array.isArray(config.item) ? config.item : fallbackItemKeys,
+  };
+}
 
-    players.forEach((player, index) => {
+function getTeamSheetManifestSections(manifest) {
+  const manifestConfig = isRecord(manifest) ? manifest : {};
+
+  return {
+    coach: getTeamSheetSectionConfig(manifestConfig.coach, ["name", "surname"]),
+    headCoach: getTeamSheetSectionConfig(manifestConfig.head_coach, ["name", "surname"]),
+    playersList: getTeamSheetSectionConfig(manifestConfig.players_list, ["jersey_number", "name", "surname"]),
+    teamName: getTeamSheetSectionConfig(manifestConfig.team_name, ["name"]),
+  };
+}
+
+function buildTeamNameOptions(teamData, fallbackLabel) {
+  const values = Array.from(
+    new Set(
+      [teamData?.team?.name, teamData?.team?.shortName, teamData?.team?.abbreviation, teamData?.team?.code]
+        .map((value) => (typeof value === "string" ? value.trim() : ""))
+        .filter(Boolean)
+    )
+  );
+
+  return (values.length ? values : [fallbackLabel]).map((value) => ({
+    label: value,
+    value,
+  }));
+}
+
+function buildTeamSheetTeamOptions(selectedData) {
+  return [
+    ["homeTeam", selectedData?.homeTeam, "Home"],
+    ["awayTeam", selectedData?.awayTeam, "Away"],
+  ].flatMap(([teamKey, teamData, fallbackLabel]) => {
+    if (!teamData) {
+      return [];
+    }
+
+    const label = getTeamLabel(teamData, fallbackLabel);
+    const players = sortPlayersByShirtNumber(teamData?.players || []).map((player, index) => {
       const shirtNumber = getPlayerShirtNumber(player);
       const positionName = player?.position?.name ? humanizeLabel(player.position.name) : null;
       const tags = [player?.captain === "true" ? "Captain" : null, positionName].filter(Boolean);
 
-      items.push({
-        id: getTeamSheetSelectionId("players", teamKey, player, index),
-        type: sectionKey,
-        section: `${teamLabel} ${sectionTitle}`,
-        teamKey,
-        teamLabel,
-        primary: getPlayerDisplayName(player),
-        secondary: tags.join(" | "),
+      return {
         badge: shirtNumber !== null && shirtNumber !== undefined ? String(shirtNumber) : "-",
-      });
+        id: getTeamSheetSelectionId("players", teamKey, player, index),
+        primary: getPlayerDisplayName(player),
+        raw: player,
+        secondary: tags.join(" | "),
+      };
     });
-  };
 
-  addPlayerGroup("homeTeam", selectedData?.homeTeam, "players", "Players", (player) => !isSubstitutePlayer(player));
-  addPlayerGroup("homeTeam", selectedData?.homeTeam, "subs", "Subs", (player) => isSubstitutePlayer(player));
-  addPlayerGroup("awayTeam", selectedData?.awayTeam, "players", "Players", (player) => !isSubstitutePlayer(player));
-  addPlayerGroup("awayTeam", selectedData?.awayTeam, "subs", "Subs", (player) => isSubstitutePlayer(player));
+    const coaches = (teamData?.coaches || []).map((coach, index) => ({
+      badge: "C",
+      id: getTeamSheetSelectionId("coaches", teamKey, coach, index),
+      primary: getPersonDisplayName(coach, "Coach"),
+      raw: coach,
+      secondary: coach?.role?.name ? humanizeLabel(coach.role.name) : "Coach",
+    }));
 
-  [
-    ["homeTeam", selectedData?.homeTeam],
-    ["awayTeam", selectedData?.awayTeam],
-  ].forEach(([teamKey, teamData]) => {
-    const teamLabel = getTeamLabel(teamData, teamKey === "homeTeam" ? "Home" : "Away");
-
-    (teamData?.coaches || []).forEach((coach, index) => {
-      items.push({
-        id: getTeamSheetSelectionId("coaches", teamKey, coach, index),
-        type: "coaches",
-        section: `${teamLabel} Coaches`,
+    return [
+      {
+        coaches,
+        label,
+        players,
+        teamData,
         teamKey,
-        teamLabel,
-        primary: coach?.knownName || coach?.name || "Coach",
-        secondary: coach?.role?.name ? humanizeLabel(coach.role.name) : "Coach",
-        badge: "C",
-      });
-    });
+        teamNameOptions: buildTeamNameOptions(teamData, label),
+      },
+    ];
   });
-
-  (selectedData?.officials || []).forEach((official, index) => {
-    items.push({
-      id: getTeamSheetSelectionId("officials", null, official, index),
-      type: "officials",
-      section: "Officials",
-      teamKey: null,
-      teamLabel: "Match",
-      primary: official?.name || "Official",
-      secondary: official?.role ? humanizeLabel(official.role) : "Official",
-      badge: "O",
-    });
-  });
-
-  return items;
 }
 
-function buildFilteredTeamSheetData(selectedData, selectedItemIds) {
-  const selectedIdSet = new Set(selectedItemIds);
+function isHeadCoach(entity) {
+  const roleLabel = entity?.role?.name || entity?.role || "";
+  return String(roleLabel).toLowerCase().includes("head");
+}
 
-  const filterBySelection = (scope, teamKey, items = []) =>
-    items.filter((item, index) => selectedIdSet.has(getTeamSheetSelectionId(scope, teamKey, item, index)));
+function getDefaultTeamSheetCoachSelections(teamOption) {
+  const headCoach = teamOption?.coaches.find((coach) => isHeadCoach(coach.raw)) || teamOption?.coaches[0] || null;
+  const coach = teamOption?.coaches.find((item) => item.id !== headCoach?.id) || headCoach || null;
+
+  return {
+    coachId: coach?.id || "",
+    headCoachId: headCoach?.id || coach?.id || "",
+  };
+}
+
+function getTeamSheetPresetFields(selectedDataType) {
+  const presetCandidates = [
+    selectedDataType?.teamSheetFields,
+    selectedDataType?.team_sheet_fields,
+    selectedDataType?.teamSheetData,
+    selectedDataType?.fields,
+  ];
+
+  return (
+    presetCandidates.find(
+      (candidate) =>
+        isRecord(candidate) &&
+        (candidate.players_list || candidate.players || candidate.head_coach || candidate.coach || candidate.team_name)
+    ) || null
+  );
+}
+
+function findTeamSheetTeamOption(teamOptions, reference) {
+  if (!reference) {
+    return null;
+  }
+
+  const normalizedReference = String(reference).trim().toLowerCase();
+
+  return (
+    teamOptions.find((teamOption) => {
+      const candidateValues = [
+        teamOption.teamKey,
+        teamOption.label,
+        teamOption.teamData?.team?.name,
+        teamOption.teamData?.team?.shortName,
+      ]
+        .filter(Boolean)
+        .map((value) => String(value).trim().toLowerCase());
+
+      return candidateValues.includes(normalizedReference);
+    }) || null
+  );
+}
+
+function findTeamSheetOptionByReference(items, reference) {
+  if (!reference) {
+    return null;
+  }
+
+  const referenceValue = isRecord(reference)
+    ? reference.id || reference.selectionId || reference.name || reference.knownName || reference.jersey_number || reference.shirtNumber
+    : reference;
+
+  const normalizedReference = String(referenceValue ?? "").trim().toLowerCase();
+  if (!normalizedReference) {
+    return null;
+  }
+
+  return (
+    items.find((item) => {
+      const candidateValues = [
+        item.id,
+        item.primary,
+        item.badge,
+        item.raw?.id,
+        item.raw?.name,
+        item.raw?.knownName,
+        item.raw?.position?.shirtNumber,
+      ]
+        .filter((value) => value !== null && value !== undefined && value !== "")
+        .map((value) => String(value).trim().toLowerCase());
+
+      return candidateValues.includes(normalizedReference);
+    }) || null
+  );
+}
+
+function resolveTeamSheetPresetSelection(teamOptions, preset, playerLimit) {
+  if (!preset || !teamOptions.length) {
+    return null;
+  }
+
+  const teamOption =
+    findTeamSheetTeamOption(teamOptions, preset.teamKey || preset.team || preset.side || preset.team_name?.name) ||
+    teamOptions[0];
+
+  if (!teamOption) {
+    return null;
+  }
+
+  const presetPlayers = Array.isArray(preset.players_list?.data)
+    ? preset.players_list.data
+    : Array.isArray(preset.players_list)
+      ? preset.players_list
+      : Array.isArray(preset.players)
+        ? preset.players
+        : [];
+
+  return {
+    coachId: findTeamSheetOptionByReference(teamOption.coaches, preset.coach?.data || preset.coach)?.id || "",
+    headCoachId:
+      findTeamSheetOptionByReference(teamOption.coaches, preset.head_coach?.data || preset.head_coach)?.id || "",
+    playerIds: presetPlayers
+      .map((player) => findTeamSheetOptionByReference(teamOption.players, player)?.id || "")
+      .filter(Boolean)
+      .slice(0, playerLimit),
+    teamKey: teamOption.teamKey,
+    teamName:
+      preset.team_name?.data?.name || preset.team_name?.name || preset.team_name || teamOption.teamNameOptions[0]?.value || "",
+  };
+}
+
+function getTeamSheetValueByKey(source, key, type, teamName = "") {
+  const normalizedKey = String(key || "").trim().toLowerCase();
+
+  if (type === "team") {
+    if (normalizedKey === "name") {
+      return teamName;
+    }
+
+    if (normalizedKey.includes("short")) {
+      return source?.shortName || teamName;
+    }
+
+    return source?.[key] ?? teamName;
+  }
+
+  const nameParts = getPersonNameParts(source, type === "player" ? "Player" : "Coach");
+
+  if (["jersey_number", "shirt_number", "shirtnumber"].includes(normalizedKey)) {
+    return getPlayerShirtNumber(source) ?? "";
+  }
+
+  if (["name", "first_name", "firstname", "given_name", "givenname"].includes(normalizedKey)) {
+    return nameParts.name;
+  }
+
+  if (["surname", "last_name", "lastname", "family_name", "familyname"].includes(normalizedKey)) {
+    return nameParts.surname;
+  }
+
+  if (["known_name", "knownname", "full_name", "fullname", "display_name", "displayname"].includes(normalizedKey)) {
+    return nameParts.displayName;
+  }
+
+  return source?.[key] ?? source?.value ?? "";
+}
+
+function buildManifestLikeTeamSheetData(selectedData, selection, manifestSections) {
+  const teamOption = selection?.teamOption;
+  if (!teamOption) {
+    return null;
+  }
+
+  const playersById = new Map(teamOption.players.map((player) => [player.id, player.raw]));
+  const coachesById = new Map(teamOption.coaches.map((coach) => [coach.id, coach.raw]));
+  const playerItemKeys = manifestSections?.playersList?.itemKeys || ["jersey_number", "name", "surname"];
+  const coachItemKeys = manifestSections?.coach?.itemKeys || ["name", "surname"];
+  const headCoachItemKeys = manifestSections?.headCoach?.itemKeys || ["name", "surname"];
+  const teamNameItemKeys = manifestSections?.teamName?.itemKeys || ["name"];
+  const resolvedTeamName = selection.teamName || teamOption.teamNameOptions[0]?.value || teamOption.label;
 
   return {
     competition: selectedData?.competition ?? null,
     season: selectedData?.season ?? null,
     venue: selectedData?.venue ?? null,
-    homeTeam: {
-      team: selectedData?.homeTeam?.team ?? null,
-      players: filterBySelection("players", "homeTeam", selectedData?.homeTeam?.players || []),
-      coaches: filterBySelection("coaches", "homeTeam", selectedData?.homeTeam?.coaches || []),
+    coach: {
+      data: coachItemKeys.reduce((result, itemKey) => {
+        const coach = coachesById.get(selection.coachId) || null;
+        result[itemKey] = coach ? getTeamSheetValueByKey(coach, itemKey, "coach") : "";
+        return result;
+      }, {}),
+      item: coachItemKeys,
     },
-    awayTeam: {
-      team: selectedData?.awayTeam?.team ?? null,
-      players: filterBySelection("players", "awayTeam", selectedData?.awayTeam?.players || []),
-      coaches: filterBySelection("coaches", "awayTeam", selectedData?.awayTeam?.coaches || []),
+    head_coach: {
+      data: headCoachItemKeys.reduce((result, itemKey) => {
+        const headCoach = coachesById.get(selection.headCoachId) || coachesById.get(selection.coachId) || null;
+        result[itemKey] = headCoach ? getTeamSheetValueByKey(headCoach, itemKey, "coach") : "";
+        return result;
+      }, {}),
+      item: headCoachItemKeys,
     },
-    officials: filterBySelection("officials", null, selectedData?.officials || []),
+    players_list: {
+      data: selection.playerIds
+        .map((playerId) => playersById.get(playerId))
+        .filter(Boolean)
+        .map((player) =>
+          playerItemKeys.reduce((result, itemKey) => {
+            result[itemKey] = getTeamSheetValueByKey(player, itemKey, "player");
+            return result;
+          }, {})
+        ),
+      list_item: playerItemKeys,
+    },
+    team_name: {
+      data: teamNameItemKeys.reduce((result, itemKey) => {
+        result[itemKey] = getTeamSheetValueByKey(teamOption.teamData?.team || {}, itemKey, "team", resolvedTeamName);
+        return result;
+      }, {}),
+      item: teamNameItemKeys,
+    },
   };
+}
+
+const STANDINGS_COLUMN_HEADER_LABELS = {
+  difference: "+/-",
+  drawn: "D",
+  lost: "L",
+  played: "P",
+  points: "PTS",
+  won: "W",
+};
+
+function isStandingsManifest(manifest) {
+  return Boolean(
+    isRecord(manifest) &&
+      isRecord(manifest.standings_list) &&
+      isRecord(manifest.column_headers) &&
+      isRecord(manifest.pool_name)
+  );
+}
+
+function getValueByAliases(source, aliases = []) {
+  for (const alias of aliases) {
+    const value = getNestedValue(source, alias);
+    if (value !== undefined && value !== null && value !== "") {
+      return value;
+    }
+  }
+
+  return "";
+}
+
+function getStandingsRows(group) {
+  const rowCandidates = [
+    group?.standings,
+    group?.standingsList,
+    group?.rows,
+    group?.items,
+    group?.entries,
+    group?.teams,
+    group?.table?.rows,
+    group?.pool?.standings,
+  ];
+
+  return rowCandidates.find((candidate) => Array.isArray(candidate) && candidate.some((entry) => isRecord(entry))) || [];
+}
+
+function isFlatStandingsRow(entry) {
+  return Boolean(
+    isRecord(entry) &&
+      (isRecord(entry.team) || entry.team_name || entry.teamName) &&
+      (entry.position !== undefined || entry.points !== undefined || entry.played !== undefined)
+  );
+}
+
+function getStandingsPools(selectedData) {
+  const groups = Array.isArray(selectedData?.groups) ? selectedData.groups : [];
+
+  if (!groups.length) {
+    return [];
+  }
+
+  if (groups.every(isFlatStandingsRow)) {
+    const poolMap = new Map();
+
+    groups.forEach((entry, index) => {
+      const poolName = getPoolName(entry, index);
+
+      if (!poolMap.has(poolName)) {
+        poolMap.set(poolName, {
+          poolName,
+          source: entry,
+          rows: [],
+        });
+      }
+
+      poolMap.get(poolName).rows.push(entry);
+    });
+
+    return Array.from(poolMap.values()).map((pool) => ({
+      ...pool,
+      rows: pool.rows
+        .slice()
+        .sort(
+          (left, right) =>
+            Number(getValueByAliases(left, ["position", "rank", "pos"]) || Number.MAX_SAFE_INTEGER) -
+            Number(getValueByAliases(right, ["position", "rank", "pos"]) || Number.MAX_SAFE_INTEGER)
+        ),
+    }));
+  }
+
+  return groups.map((group, index) => ({
+    poolName: getPoolName(group, index),
+    rows: getStandingsRows(group),
+    source: group,
+  }));
+}
+
+function normalizeStandingsValue(value) {
+  if (value === null || value === undefined) {
+    return "";
+  }
+
+  return String(value);
+}
+
+function getPoolName(group, index) {
+  return normalizeStandingsValue(
+    getValueByAliases(group, ["pool_name", "poolName", "name", "title", "label", "groupName", "pool.name"]) ||
+      `Pool ${index + 1}`
+  );
+}
+
+function getPoolNumber(group, row, index) {
+  const poolValue =
+    getValueByAliases(row, ["pool_number", "poolNumber", "pool.number"]) ||
+    getValueByAliases(group, ["pool_number", "poolNumber", "number", "pool.number", "pool.code"]);
+
+  if (poolValue) {
+    return normalizeStandingsValue(poolValue);
+  }
+
+  const poolName = getPoolName(group, index);
+  const suffix = poolName.match(/([A-Z0-9]+)$/i)?.[1];
+  return suffix || poolName;
+}
+
+function getManifestSectionItemKeys(section) {
+  if (!isRecord(section)) {
+    return [];
+  }
+
+  if (Array.isArray(section.list_item)) {
+    return section.list_item;
+  }
+
+  if (Array.isArray(section.item)) {
+    return section.item;
+  }
+
+  return [];
+}
+
+function buildManifestSectionData(section, preferredValue, fallbackAliases = [], source = null) {
+  const itemKeys = getManifestSectionItemKeys(section);
+
+  return {
+    data: itemKeys.reduce((result, itemKey, index) => {
+      if (source) {
+        result[itemKey] = normalizeStandingsValue(getValueByAliases(source, [itemKey, ...fallbackAliases]));
+        return result;
+      }
+
+      result[itemKey] = index === 0 ? normalizeStandingsValue(preferredValue) : "";
+      return result;
+    }, {}),
+    item: itemKeys,
+  };
+}
+
+function buildStandingsColumnHeaders(manifest) {
+  const headerKeys = getManifestSectionItemKeys(manifest?.column_headers);
+
+  return {
+    data: headerKeys.reduce((result, itemKey) => {
+      result[itemKey] = STANDINGS_COLUMN_HEADER_LABELS[itemKey] || humanizeLabel(itemKey);
+      return result;
+    }, {}),
+    item: headerKeys,
+  };
+}
+
+function buildStandingsPoolPayloads(selectedData, selectedDataType, manifest) {
+  const pools = getStandingsPools(selectedData);
+  const standingFields = Array.isArray(manifest?.standings_list?.fields) ? manifest.standings_list.fields : [];
+  const standingKeys = getManifestSectionItemKeys(manifest?.standings_list);
+  const titleValue =
+    selectedData?.classification?.name || selectedDataType?.type || selectedDataType?.dataType || "Standings";
+
+  return pools
+    .map((pool, poolIndex) => {
+      const rows = pool.rows
+        .slice(0, standingFields.length)
+        .map((row, rowIndex) => ({
+          difference: normalizeStandingsValue(
+            getValueByAliases(row, ["difference", "pointsDifference", "pointDifference", "pointsDiff", "diff"])
+          ),
+          drawn: normalizeStandingsValue(getValueByAliases(row, ["drawn", "draw", "draws", "tied"])),
+          lost: normalizeStandingsValue(getValueByAliases(row, ["lost", "losses", "l"])),
+          played: normalizeStandingsValue(getValueByAliases(row, ["played", "matchesPlayed", "p"])),
+          points: normalizeStandingsValue(getValueByAliases(row, ["points", "pts", "tablePoints"])),
+          pool_number: getPoolNumber(pool.source, row, poolIndex),
+          position: normalizeStandingsValue(getValueByAliases(row, ["position", "rank", "pos"]) || rowIndex + 1),
+          team_logo: normalizeStandingsValue(
+            getValueByAliases(row, [
+              "team_logo",
+              "teamLogo",
+              "team.logo",
+              "team.image",
+              "team.badge",
+              "team.crest",
+              "logo",
+              "image",
+            ])
+          ),
+          team_name: normalizeStandingsValue(
+            getValueByAliases(row, ["team_name", "teamName", "team.shortName", "team.name", "name"])
+          ),
+          won: normalizeStandingsValue(getValueByAliases(row, ["won", "wins", "w"])),
+        }))
+        .map((row) =>
+          standingKeys.reduce((result, itemKey) => {
+            result[itemKey] = row[itemKey] ?? "";
+            return result;
+          }, {})
+        );
+
+      if (!rows.length) {
+        return null;
+      }
+
+      const poolName = pool.poolName;
+
+      return {
+        data: {
+          column_headers: buildStandingsColumnHeaders(manifest),
+          pool_name: buildManifestSectionData(manifest?.pool_name, poolName, ["pool_name", "poolName", "name"]),
+          standings_list: {
+            data: rows,
+            list_item: standingKeys,
+          },
+          title: buildManifestSectionData(manifest?.title, titleValue, ["title", "name"]),
+        },
+        pageTitle: `${titleValue} | ${poolName}`,
+        poolName,
+      };
+    })
+    .filter(Boolean);
 }
 
 function buildFilteredSelectedData(selectedData, selectedFieldPaths, options = {}) {
@@ -470,8 +1078,20 @@ function buildFilteredSelectedData(selectedData, selectedFieldPaths, options = {
     return null;
   }
 
+  if (options.previewMode === "standings") {
+    return options.standingsPoolPayloads?.[0]?.data || null;
+  }
+
   if (options.previewMode === "top-player-scores") {
     return buildFilteredTopPlayerScoresData(selectedData, selectedFieldPaths, options.topPlayerItems || []);
+  }
+
+  if (options.previewMode === "head-to-head") {
+    return buildFilteredHeadToHeadData(selectedData, selectedFieldPaths, {
+      summaryItems: options.headToHeadSummaryItems || [],
+      matchItems: options.headToHeadMatchItems || [],
+      formItems: options.headToHeadFormItems || [],
+    });
   }
 
   if (isMatchStatsPayload(selectedData)) {
@@ -493,7 +1113,7 @@ function buildFilteredSelectedData(selectedData, selectedFieldPaths, options = {
   }
 
   if (isTeamSheetsPayload(selectedData)) {
-    return buildFilteredTeamSheetData(selectedData, selectedFieldPaths);
+    return buildManifestLikeTeamSheetData(selectedData, options.teamSheetSelection, options.teamSheetManifestSections);
   }
 
   const groups = Array.isArray(selectedData.groups) ? selectedData.groups : [];
@@ -606,7 +1226,7 @@ const ROUND_OPTIONS = Array.from({ length: 16 }, (_, index) => String(index + 1)
 
 export default function PageCreationOverlay({ selectedDataType, onClose, onConfirm }) {
   const { matchId } = useParams();
-  const { state } = useAppFlow();
+  const { state, setSelectedElementCollectionUri } = useAppFlow();
   const [selectedData, setSelectedData] = useState(null);
   const [selectedFieldPaths, setSelectedFieldPaths] = useState([]);
   const [shows, setShows] = useState([]);
@@ -624,6 +1244,11 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
   const [selectedStat, setSelectedStat] = useState("");
   const [selectedCoverage, setSelectedCoverage] = useState("");
   const [selectedRound, setSelectedRound] = useState("");
+  const [selectedTeamSheetTeamKey, setSelectedTeamSheetTeamKey] = useState("");
+  const [selectedTeamSheetPlayerIds, setSelectedTeamSheetPlayerIds] = useState([]);
+  const [selectedTeamSheetCoachId, setSelectedTeamSheetCoachId] = useState("");
+  const [selectedTeamSheetHeadCoachId, setSelectedTeamSheetHeadCoachId] = useState("");
+  const [selectedTeamSheetName, setSelectedTeamSheetName] = useState("");
 
   const requiresStatSelection = useMemo(
     () =>
@@ -673,13 +1298,41 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
     );
   }, [selectedData]);
 
-  const teamSheetItems = useMemo(() => {
+  const teamSheetManifestSections = useMemo(
+    () => getTeamSheetManifestSections(selectedManifest || preparedTemplate?.mapping),
+    [preparedTemplate?.mapping, selectedManifest]
+  );
+
+  const teamSheetPlayerLimit = useMemo(() => {
+    const fieldRows = Array.isArray(teamSheetManifestSections?.playersList?.fields)
+      ? teamSheetManifestSections.playersList.fields
+      : [];
+
+    return fieldRows.length || 23;
+  }, [teamSheetManifestSections]);
+
+  const teamSheetTeamOptions = useMemo(() => {
     if (!isTeamSheetsPayload(selectedData) || isMatchStatsPayload(selectedData)) {
       return [];
     }
 
-    return buildTeamSheetSelectableItems(selectedData);
+    return buildTeamSheetTeamOptions(selectedData);
   }, [selectedData]);
+
+  const teamSheetPresetFields = useMemo(() => getTeamSheetPresetFields(selectedDataType), [selectedDataType]);
+
+  const teamSheetPresetSelection = useMemo(
+    () => resolveTeamSheetPresetSelection(teamSheetTeamOptions, teamSheetPresetFields, teamSheetPlayerLimit),
+    [teamSheetPlayerLimit, teamSheetPresetFields, teamSheetTeamOptions]
+  );
+
+  const standingsPoolPayloads = useMemo(() => {
+    if (!isStandingsManifest(selectedManifest) || !Array.isArray(selectedData?.groups)) {
+      return [];
+    }
+
+    return buildStandingsPoolPayloads(selectedData, selectedDataType, selectedManifest);
+  }, [selectedData, selectedDataType, selectedManifest]);
 
   const topPlayerItems = useMemo(() => {
     if (!isTopPlayerScoresDataType(selectedDataType) || !selectedData) {
@@ -695,9 +1348,9 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
     topPlayerItems.forEach((item) => {
       if (!sections.has(item.sectionPath)) {
         sections.set(item.sectionPath, {
+          items: [],
           path: item.sectionPath,
           title: item.sectionLabel,
-          items: [],
         });
       }
 
@@ -707,19 +1360,29 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
     return Array.from(sections.values());
   }, [topPlayerItems]);
 
-  const teamSheetSections = useMemo(() => {
-    const sections = new Map();
+  const headToHeadSummaryItems = useMemo(() => {
+    if (!isHeadToHeadPayload(selectedData)) {
+      return [];
+    }
 
-    teamSheetItems.forEach((item) => {
-      if (!sections.has(item.section)) {
-        sections.set(item.section, []);
-      }
+    return buildHeadToHeadSummaryItems(selectedData);
+  }, [selectedData]);
 
-      sections.get(item.section).push(item);
-    });
+  const headToHeadMatchItems = useMemo(() => {
+    if (!isHeadToHeadPayload(selectedData)) {
+      return [];
+    }
 
-    return Array.from(sections.entries()).map(([title, items]) => ({ title, items }));
-  }, [teamSheetItems]);
+    return buildHeadToHeadMatchItems(selectedData);
+  }, [selectedData]);
+
+  const headToHeadFormItems = useMemo(() => {
+    if (!isHeadToHeadPayload(selectedData)) {
+      return [];
+    }
+
+    return buildHeadToHeadFormItems(selectedData);
+  }, [selectedData]);
 
   const teamStatPaths = useMemo(() => {
     if (!isMatchStatsPayload(selectedData)) {
@@ -732,8 +1395,16 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
   }, [selectedData]);
 
   const previewMode = useMemo(() => {
+    if (standingsPoolPayloads.length) {
+      return "standings";
+    }
+
     if (groupColumns.length) {
       return "groups";
+    }
+
+    if (headToHeadSummaryItems.length || headToHeadMatchItems.length || headToHeadFormItems.length) {
+      return "head-to-head";
     }
 
     if (topPlayerItems.length) {
@@ -744,14 +1415,163 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
       return "match-stats";
     }
 
-    if (teamSheetItems.length) {
+    if (teamSheetTeamOptions.length) {
       return "team-sheets";
     }
 
     return "json";
-  }, [groupColumns, teamSheetItems.length, teamStatPaths, topPlayerItems.length]);
+  }, [groupColumns, headToHeadFormItems.length, headToHeadMatchItems.length, headToHeadSummaryItems.length, standingsPoolPayloads.length, teamSheetTeamOptions.length, teamStatPaths, topPlayerItems.length]);
 
   useEffect(() => {
+    if (previewMode !== "team-sheets") {
+      return;
+    }
+
+    const fallbackTeamKey = teamSheetPresetSelection?.teamKey || teamSheetTeamOptions[0]?.teamKey || "";
+
+    setSelectedTeamSheetTeamKey((currentTeamKey) => {
+      if (!fallbackTeamKey) {
+        return "";
+      }
+
+      if (!teamSheetPresetSelection?.teamKey && teamSheetTeamOptions.some((teamOption) => teamOption.teamKey === currentTeamKey)) {
+        return currentTeamKey;
+      }
+
+      return fallbackTeamKey;
+    });
+  }, [previewMode, teamSheetPresetSelection?.teamKey, teamSheetTeamOptions]);
+
+  const selectedTeamSheetTeam = useMemo(
+    () => teamSheetTeamOptions.find((teamOption) => teamOption.teamKey === selectedTeamSheetTeamKey) || null,
+    [selectedTeamSheetTeamKey, teamSheetTeamOptions]
+  );
+
+  useEffect(() => {
+    if (previewMode !== "team-sheets") {
+      return;
+    }
+
+    if (!selectedTeamSheetTeam) {
+      setSelectedTeamSheetPlayerIds([]);
+      setSelectedTeamSheetCoachId("");
+      setSelectedTeamSheetHeadCoachId("");
+      setSelectedTeamSheetName("");
+      return;
+    }
+
+    const teamPreset =
+      teamSheetPresetSelection?.teamKey === selectedTeamSheetTeam.teamKey ? teamSheetPresetSelection : null;
+    const defaultCoachSelection = getDefaultTeamSheetCoachSelections(selectedTeamSheetTeam);
+    const defaultPlayerIds = selectedTeamSheetTeam.players
+      .slice(0, teamSheetPlayerLimit)
+      .map((player) => player.id);
+
+    setSelectedTeamSheetPlayerIds((currentIds) => {
+      const validCurrentIds = currentIds.filter((playerId) =>
+        selectedTeamSheetTeam.players.some((player) => player.id === playerId)
+      );
+
+      if (teamPreset?.playerIds?.length) {
+        return teamPreset.playerIds;
+      }
+
+      if (validCurrentIds.length) {
+        return validCurrentIds.slice(0, teamSheetPlayerLimit);
+      }
+
+      return defaultPlayerIds;
+    });
+
+    setSelectedTeamSheetCoachId((currentCoachId) => {
+      if (teamPreset?.coachId && selectedTeamSheetTeam.coaches.some((coach) => coach.id === teamPreset.coachId)) {
+        return teamPreset.coachId;
+      }
+
+      if (selectedTeamSheetTeam.coaches.some((coach) => coach.id === currentCoachId)) {
+        return currentCoachId;
+      }
+
+      return defaultCoachSelection.coachId;
+    });
+
+    setSelectedTeamSheetHeadCoachId((currentHeadCoachId) => {
+      if (
+        teamPreset?.headCoachId &&
+        selectedTeamSheetTeam.coaches.some((coach) => coach.id === teamPreset.headCoachId)
+      ) {
+        return teamPreset.headCoachId;
+      }
+
+      if (selectedTeamSheetTeam.coaches.some((coach) => coach.id === currentHeadCoachId)) {
+        return currentHeadCoachId;
+      }
+
+      return defaultCoachSelection.headCoachId;
+    });
+
+    setSelectedTeamSheetName((currentTeamName) => {
+      if (
+        teamPreset?.teamName &&
+        selectedTeamSheetTeam.teamNameOptions.some((teamNameOption) => teamNameOption.value === teamPreset.teamName)
+      ) {
+        return teamPreset.teamName;
+      }
+
+      if (selectedTeamSheetTeam.teamNameOptions.some((teamNameOption) => teamNameOption.value === currentTeamName)) {
+        return currentTeamName;
+      }
+
+      return selectedTeamSheetTeam.teamNameOptions[0]?.value || "";
+    });
+  }, [previewMode, selectedTeamSheetTeam, teamSheetPlayerLimit, teamSheetPresetSelection]);
+
+  const teamSheetSelection = useMemo(() => {
+    if (!selectedTeamSheetTeam) {
+      return null;
+    }
+
+    return {
+      coachId: selectedTeamSheetCoachId,
+      headCoachId: selectedTeamSheetHeadCoachId,
+      playerIds: selectedTeamSheetPlayerIds,
+      teamName: selectedTeamSheetName,
+      teamOption: selectedTeamSheetTeam,
+    };
+  }, [selectedTeamSheetCoachId, selectedTeamSheetHeadCoachId, selectedTeamSheetName, selectedTeamSheetPlayerIds, selectedTeamSheetTeam]);
+
+  const teamSheetSelectionCount = useMemo(
+    () =>
+      selectedTeamSheetPlayerIds.length +
+      Number(Boolean(selectedTeamSheetCoachId)) +
+      Number(Boolean(selectedTeamSheetHeadCoachId)) +
+      Number(Boolean(selectedTeamSheetName)),
+    [selectedTeamSheetCoachId, selectedTeamSheetHeadCoachId, selectedTeamSheetName, selectedTeamSheetPlayerIds.length]
+  );
+
+  const hasEnoughTeamSheetPlayers = useMemo(
+    () => Boolean(selectedTeamSheetTeam && selectedTeamSheetTeam.players.length >= teamSheetPlayerLimit),
+    [selectedTeamSheetTeam, teamSheetPlayerLimit]
+  );
+
+  const hasCompleteTeamSheetSelection = useMemo(
+    () =>
+      Boolean(
+        selectedTeamSheetTeam &&
+          selectedTeamSheetName &&
+          selectedTeamSheetCoachId &&
+          selectedTeamSheetHeadCoachId &&
+          selectedTeamSheetPlayerIds.length === teamSheetPlayerLimit
+      ),
+    [selectedTeamSheetCoachId, selectedTeamSheetHeadCoachId, selectedTeamSheetName, selectedTeamSheetPlayerIds.length, selectedTeamSheetTeam, teamSheetPlayerLimit]
+  );
+
+  useEffect(() => {
+    if (previewMode === "standings") {
+      setSelectedFieldPaths([]);
+      return;
+    }
+
     if (previewMode === "groups") {
       setSelectedFieldPaths(groupColumns);
       return;
@@ -762,28 +1582,43 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
       return;
     }
 
+    if (previewMode === "head-to-head") {
+      setSelectedFieldPaths([
+        ...headToHeadSummaryItems.map((item) => item.id),
+        ...headToHeadMatchItems.map((item) => item.id),
+        ...headToHeadFormItems.map((item) => item.id),
+      ]);
+      return;
+    }
+
     if (previewMode === "top-player-scores") {
       setSelectedFieldPaths(topPlayerItems.map((item) => item.id));
       return;
     }
 
     if (previewMode === "team-sheets") {
-      setSelectedFieldPaths(teamSheetItems.map((item) => item.id));
+      setSelectedFieldPaths([]);
       return;
     }
 
     setSelectedFieldPaths([]);
-  }, [groupColumns, previewMode, teamSheetItems, teamStatPaths, topPlayerItems]);
+  }, [groupColumns, headToHeadFormItems, headToHeadMatchItems, headToHeadSummaryItems, previewMode, teamStatPaths, topPlayerItems]);
 
   const selectedFieldPathSet = useMemo(() => new Set(selectedFieldPaths), [selectedFieldPaths]);
 
   const filteredSelectedData = useMemo(
     () =>
       buildFilteredSelectedData(selectedData, selectedFieldPaths, {
+        headToHeadFormItems,
+        headToHeadMatchItems,
+        headToHeadSummaryItems,
         previewMode,
+        standingsPoolPayloads,
+        teamSheetManifestSections,
+        teamSheetSelection,
         topPlayerItems,
       }),
-    [previewMode, selectedData, selectedFieldPaths, topPlayerItems]
+    [headToHeadFormItems, headToHeadMatchItems, headToHeadSummaryItems, previewMode, selectedData, selectedFieldPaths, standingsPoolPayloads, teamSheetManifestSections, teamSheetSelection, topPlayerItems]
   );
 
   const filteredGroupsTable = useMemo(() => {
@@ -839,20 +1674,55 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
       .filter((section) => section.items.length);
   }, [previewMode, selectedFieldPaths, topPlayerSections]);
 
-  const filteredTeamSheetSections = useMemo(() => {
-    if (previewMode !== "team-sheets") {
+  const filteredHeadToHeadSummaryItems = useMemo(() => {
+    if (previewMode !== "head-to-head") {
       return [];
     }
 
-    const selectedIdSet = new Set(selectedFieldPaths);
+    return headToHeadSummaryItems.filter((item) => selectedFieldPathSet.has(item.id));
+  }, [headToHeadSummaryItems, previewMode, selectedFieldPathSet]);
 
-    return teamSheetSections
-      .map((section) => ({
-        title: section.title,
-        items: section.items.filter((item) => selectedIdSet.has(item.id)),
-      }))
-      .filter((section) => section.items.length);
-  }, [previewMode, selectedFieldPaths, teamSheetSections]);
+  const filteredHeadToHeadMatchItems = useMemo(() => {
+    if (previewMode !== "head-to-head") {
+      return [];
+    }
+
+    return headToHeadMatchItems.filter((item) => selectedFieldPathSet.has(item.id));
+  }, [headToHeadMatchItems, previewMode, selectedFieldPathSet]);
+
+  const filteredHeadToHeadFormSections = useMemo(() => {
+    if (previewMode !== "head-to-head") {
+      return [];
+    }
+
+    const sections = new Map();
+
+    headToHeadFormItems.forEach((item) => {
+      if (!sections.has(item.teamKey)) {
+        sections.set(item.teamKey, {
+          teamKey: item.teamKey,
+          title: item.teamLabel,
+          items: [],
+        });
+      }
+
+      if (selectedFieldPathSet.has(item.id)) {
+        sections.get(item.teamKey).items.push(item);
+      }
+    });
+
+    return Array.from(sections.values()).filter((section) => section.items.length);
+  }, [headToHeadFormItems, previewMode, selectedFieldPathSet]);
+
+  const previewSelectionCount = useMemo(
+    () =>
+      previewMode === "team-sheets"
+        ? teamSheetSelectionCount
+        : previewMode === "standings"
+          ? standingsPoolPayloads.length
+          : selectedFieldPaths.length,
+    [previewMode, selectedFieldPaths.length, standingsPoolPayloads.length, teamSheetSelectionCount]
+  );
 
   const homeTeamLabel = useMemo(
     () => selectedData?.homeTeam?.team?.shortName || selectedData?.homeTeam?.team?.name || "Home",
@@ -865,6 +1735,16 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
   );
 
   const titleText = useMemo(() => {
+    if (previewMode === "head-to-head") {
+      const homeName = selectedData?.teams?.homeTeam?.name || "Home Team";
+      const awayName = selectedData?.teams?.awayTeam?.name || "Away Team";
+      return `${homeName} vs ${awayName}`;
+    }
+
+    if (previewMode === "standings") {
+      return selectedDataType?.dataType || selectedData?.classification?.name || "Standings";
+    }
+
     if (previewMode === "top-player-scores") {
       return selectedDataType?.dataType || "Top 10 Players";
     }
@@ -888,6 +1768,19 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
   }, [filteredSelectedData, previewMode, selectedData, selectedDataType?.dataType]);
 
   const subtitleText = useMemo(() => {
+    if (previewMode === "head-to-head") {
+      const competitionName = selectedData?.matchInfo?.competition?.seasonName || selectedData?.matchInfo?.competition?.name;
+      const seasonName = selectedData?.matchInfo?.season?.name;
+      const venueName = selectedData?.matchInfo?.venue?.name;
+      return [competitionName, seasonName, venueName].filter(Boolean).join(" | ");
+    }
+
+    if (previewMode === "standings") {
+      const competitionName = selectedData?.competition?.name;
+      const seasonName = selectedData?.season?.name;
+      return [competitionName, seasonName].filter(Boolean).join(" | ");
+    }
+
     if (previewMode === "top-player-scores") {
       const competitionName = selectedData?.competition?.name;
       const seasonName = selectedData?.season?.name;
@@ -970,6 +1863,7 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
         setSelectedShowId("");
         setSelectedTemplateId("");
         setSelectedManifest(null);
+        setSelectedElementCollectionUri("");
       } catch (loadError) {
         if (mounted) {
           setSelectedData(null);
@@ -978,6 +1872,7 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
           setSelectedShowId("");
           setSelectedTemplateId("");
           setSelectedManifest(null);
+          setSelectedElementCollectionUri("");
           setError(loadError.message || "Failed to load page creation data.");
         }
       } finally {
@@ -1018,6 +1913,7 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
       if (!selectedShow) {
         setTemplates([]);
         setSelectedManifest(null);
+        setSelectedElementCollectionUri("");
         return;
       }
 
@@ -1025,7 +1921,7 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
       setError("");
 
       try {
-        const templateList = await getGraphicTemplates(selectedShow.raw);
+        const { elementCollectionUri, templates: templateList } = await getGraphicTemplates(selectedShow.raw);
         if (!mounted) {
           return;
         }
@@ -1033,11 +1929,13 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
         setTemplates(templateList);
         setSelectedTemplateId("");
         setSelectedManifest(null);
+        setSelectedElementCollectionUri(elementCollectionUri);
       } catch (loadError) {
         if (mounted) {
           setTemplates([]);
           setSelectedTemplateId("");
           setSelectedManifest(null);
+          setSelectedElementCollectionUri("");
           setError(loadError.message || "Failed to load templates.");
         }
       } finally {
@@ -1058,6 +1956,7 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
     if (!selectedShowId) {
       setSelectedTemplateId("");
       setSelectedManifest(null);
+      setSelectedElementCollectionUri("");
       return;
     }
 
@@ -1155,8 +2054,52 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
       setSubmitting(true);
       setError("");
 
-      const fieldValues = buildFieldValuesFromTemplate(preparedTemplate.mapping, filteredSelectedData);
-      const createdPage = await createGraphicPage({ preparedTemplate, fieldValues });
+      const fieldMapping = selectedManifest || preparedTemplate.mapping;
+      const preparedTemplatePayload = {
+        ...preparedTemplate,
+        elementCollectionUri: state.selectedElementCollectionUri || preparedTemplate.elementCollectionUri,
+      };
+
+      if (previewMode === "standings") {
+        const createdPages = [];
+
+        for (const poolPayload of standingsPoolPayloads) {
+          const fieldValues = buildFieldValuesFromTemplate(fieldMapping, poolPayload.data);
+          const createdPage = await createGraphicPage({
+            preparedTemplate: preparedTemplatePayload,
+            fieldValues,
+          });
+
+          createdPages.push({
+            createdPage,
+            fieldValues,
+            pageTitle: poolPayload.pageTitle,
+            selectedData: poolPayload.data,
+          });
+        }
+
+        await onConfirm({
+          createdPages,
+          selectedCoverage,
+          selectedData: filteredSelectedData,
+          selectedFieldPaths,
+          selectedRound,
+          selectedStat,
+          template: {
+            ...selectedTemplate,
+            mapping: fieldMapping,
+            templateName: preparedTemplate.templateName,
+          },
+        });
+
+        return;
+      }
+
+      const fieldValues = buildFieldValuesFromTemplate(fieldMapping, filteredSelectedData);
+      const createdPage = await createGraphicPage({
+        preparedTemplate: preparedTemplatePayload,
+        fieldValues,
+      });
 
       await onConfirm({
         createdPage,
@@ -1167,7 +2110,7 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
         selectedStat,
         template: {
           ...selectedTemplate,
-          mapping: preparedTemplate.mapping,
+          mapping: fieldMapping,
           templateName: preparedTemplate.templateName,
         },
         fieldValues,
@@ -1268,10 +2211,32 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
                   <h4>{titleText}</h4>
                   {subtitleText ? <p className="page-creation-overlay__title-meta">{subtitleText}</p> : null}
                 </div>
-                <span>{selectedFieldPaths.length}</span>
+                <span>{previewMode === "standings" ? `${previewSelectionCount} pools` : previewSelectionCount}</span>
               </div>
 
-              {previewMode === "groups" ? (
+              {previewMode === "standings" ? (
+                <div className="page-creation-overlay__preview-block">
+                  <div className="page-creation-overlay__panel-header">
+                    <h4>Pools</h4>
+                    <span>{standingsPoolPayloads.length}</span>
+                  </div>
+
+                  <div className="page-creation-overlay__top-players-wrap">
+                    <div className="page-creation-overlay__top-players-list">
+                      {standingsPoolPayloads.map((poolPayload) => (
+                        <section className="page-creation-overlay__top-player-section" key={poolPayload.poolName}>
+                          <div className="page-creation-overlay__top-player-section-header">
+                            <h5>{poolPayload.poolName}</h5>
+                            <span>{poolPayload.data?.standings_list?.data?.length || 0}</span>
+                          </div>
+
+                          <pre className="page-creation-overlay__json">{stringifyJson(poolPayload.data)}</pre>
+                        </section>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ) : previewMode === "groups" ? (
                 <>
                   <div className="page-creation-overlay__field-toolbar">
                     <div className="page-creation-overlay__field-actions">
@@ -1339,6 +2304,176 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
                         {stringifyJson(filteredSelectedData || selectedData || {})}
                       </pre>
                     )}
+                  </div>
+                </>
+              ) : previewMode === "head-to-head" ? (
+                <>
+                  <div className="page-creation-overlay__field-toolbar">
+                    <div className="page-creation-overlay__field-actions">
+                      <button
+                        type="button"
+                        className="page-creation-overlay__field-action"
+                        onClick={() =>
+                          setSelectedFieldPaths([
+                            ...headToHeadSummaryItems.map((item) => item.id),
+                            ...headToHeadMatchItems.map((item) => item.id),
+                            ...headToHeadFormItems.map((item) => item.id),
+                          ])
+                        }
+                      >
+                        Select all items
+                      </button>
+                      <button
+                        type="button"
+                        className="page-creation-overlay__field-action"
+                        onClick={() => setSelectedFieldPaths([])}
+                      >
+                        Clear all items
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="page-creation-overlay__preview-block">
+                    <div className="page-creation-overlay__panel-header">
+                      <h4>Head To Head</h4>
+                      <span>{selectedFieldPaths.length}</span>
+                    </div>
+
+                    <div className="page-creation-overlay__head-to-head-wrap">
+                      <section className="page-creation-overlay__head-to-head-section">
+                        <div className="page-creation-overlay__head-to-head-section-header">
+                          <h5>Summary</h5>
+                          <span>{filteredHeadToHeadSummaryItems.length}</span>
+                        </div>
+
+                        <div className="page-creation-overlay__head-to-head-summary-grid">
+                          {headToHeadSummaryItems.map((item) => (
+                            <label
+                              className={`page-creation-overlay__head-to-head-summary-item ${
+                                selectedFieldPathSet.has(item.id) ? "selected" : ""
+                              }`}
+                              key={item.id}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={selectedFieldPathSet.has(item.id)}
+                                onChange={() => {
+                                  setSelectedFieldPaths((currentPaths) =>
+                                    currentPaths.includes(item.id)
+                                      ? currentPaths.filter((currentPath) => currentPath !== item.id)
+                                      : [...currentPaths, item.id]
+                                  );
+                                }}
+                              />
+                              <span className="page-creation-overlay__head-to-head-summary-copy">
+                                <small>{item.label}</small>
+                                <strong>{item.value}</strong>
+                              </span>
+                            </label>
+                          ))}
+                        </div>
+                      </section>
+
+                      <section className="page-creation-overlay__head-to-head-section">
+                        <div className="page-creation-overlay__head-to-head-section-header">
+                          <h5>Last Meetings</h5>
+                          <span>{filteredHeadToHeadMatchItems.length}</span>
+                        </div>
+
+                        <div className="page-creation-overlay__head-to-head-list">
+                          {headToHeadMatchItems.map((item) => (
+                            <label
+                              className={`page-creation-overlay__head-to-head-match-item ${
+                                selectedFieldPathSet.has(item.id) ? "selected" : ""
+                              }`}
+                              key={item.id}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={selectedFieldPathSet.has(item.id)}
+                                onChange={() => {
+                                  setSelectedFieldPaths((currentPaths) =>
+                                    currentPaths.includes(item.id)
+                                      ? currentPaths.filter((currentPath) => currentPath !== item.id)
+                                      : [...currentPaths, item.id]
+                                  );
+                                }}
+                              />
+                              <span className="page-creation-overlay__head-to-head-match-body">
+                                <span className="page-creation-overlay__head-to-head-match-meta">
+                                  <strong>{item.compName}</strong>
+                                  <small>{[item.matchDate, item.venue].filter(Boolean).join(" | ")}</small>
+                                </span>
+                                <span className="page-creation-overlay__head-to-head-match-score">
+                                  <strong>{`${item.homeTeamScore} - ${item.awayTeamScore}`}</strong>
+                                  <small>{item.winner}</small>
+                                </span>
+                              </span>
+                            </label>
+                          ))}
+                        </div>
+                      </section>
+
+                      <section className="page-creation-overlay__head-to-head-section">
+                        <div className="page-creation-overlay__head-to-head-section-header">
+                          <h5>Recent Form</h5>
+                          <span>{filteredHeadToHeadFormSections.reduce((total, section) => total + section.items.length, 0)}</span>
+                        </div>
+
+                        <div className="page-creation-overlay__head-to-head-form-grid">
+                          {[homeTeamLabel, awayTeamLabel].map((label, index) => {
+                            const teamKey = index === 0 ? "homeTeam" : "awayTeam";
+                            const teamItems = headToHeadFormItems.filter((item) => item.teamKey === teamKey);
+                            const selectedCount = teamItems.filter((item) => selectedFieldPathSet.has(item.id)).length;
+
+                            return (
+                              <section className="page-creation-overlay__head-to-head-form-section" key={teamKey}>
+                                <div className="page-creation-overlay__head-to-head-section-header">
+                                  <h5>{label}</h5>
+                                  <span>{selectedCount}</span>
+                                </div>
+
+                                <div className="page-creation-overlay__head-to-head-form-list">
+                                  {teamItems.map((item) => (
+                                    <label
+                                      className={`page-creation-overlay__head-to-head-form-item ${
+                                        selectedFieldPathSet.has(item.id) ? "selected" : ""
+                                      }`}
+                                      key={item.id}
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        checked={selectedFieldPathSet.has(item.id)}
+                                        onChange={() => {
+                                          setSelectedFieldPaths((currentPaths) =>
+                                            currentPaths.includes(item.id)
+                                              ? currentPaths.filter((currentPath) => currentPath !== item.id)
+                                              : [...currentPaths, item.id]
+                                          );
+                                        }}
+                                      />
+                                      <span className="page-creation-overlay__head-to-head-form-body">
+                                        <span
+                                          className={`page-creation-overlay__head-to-head-form-result page-creation-overlay__head-to-head-form-result--${String(
+                                            item.result || "-"
+                                          ).toLowerCase()}`}
+                                        >
+                                          {item.result}
+                                        </span>
+                                        <span className="page-creation-overlay__head-to-head-form-copy">
+                                          <strong>{item.oppositionTeamName}</strong>
+                                          <small>{item.matchDate}</small>
+                                        </span>
+                                      </span>
+                                    </label>
+                                  ))}
+                                </div>
+                              </section>
+                            );
+                          })}
+                        </div>
+                      </section>
+                    </div>
                   </div>
                 </>
               ) : previewMode === "top-player-scores" ? (
@@ -1497,56 +2632,68 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
                 </>
               ) : previewMode === "team-sheets" ? (
                 <>
-                  <div className="page-creation-overlay__field-toolbar">
-                    <div className="page-creation-overlay__field-actions">
-                      <button
-                        type="button"
-                        className="page-creation-overlay__field-action"
-                        onClick={() => setSelectedFieldPaths(teamSheetItems.map((item) => item.id))}
-                      >
-                        Select all items
-                      </button>
-                      <button
-                        type="button"
-                        className="page-creation-overlay__field-action"
-                        onClick={() => setSelectedFieldPaths([])}
-                      >
-                        Clear all items
-                      </button>
-                    </div>
-                  </div>
-
                   <div className="page-creation-overlay__preview-block">
                     <div className="page-creation-overlay__panel-header">
-                      <h4>Team Sheet Items</h4>
-                      <span>{selectedFieldPaths.length}</span>
+                      <h4>Team Sheet Selection</h4>
+                      <span>{teamSheetSelectionCount}</span>
                     </div>
 
                     <div className="page-creation-overlay__team-sheet-wrap">
                       <div className="page-creation-overlay__team-sheet-list">
-                        {teamSheetSections.map((section) => (
-                          <section className="page-creation-overlay__team-sheet-section" key={section.title}>
-                            <div className="page-creation-overlay__team-sheet-section-header">
-                              <h5>{section.title}</h5>
-                              <span>{section.items.filter((item) => selectedFieldPathSet.has(item.id)).length}</span>
-                            </div>
+                        <label className="page-creation-overlay__selector">
+                          <span>Team source</span>
+                          <select
+                            value={selectedTeamSheetTeamKey}
+                            onChange={(event) => setSelectedTeamSheetTeamKey(event.target.value)}
+                          >
+                            <option value="">Select team</option>
+                            {teamSheetTeamOptions.map((teamOption) => (
+                              <option key={teamOption.teamKey} value={teamOption.teamKey}>
+                                {teamOption.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
 
-                            <div className="page-creation-overlay__team-sheet-grid">
-                              {section.items.map((item) => (
+                        {teamSheetPresetFields ? (
+                          <p className="page-creation-overlay__helper">
+                            Team Sheet fields from the selected data type were used to prefill any matching selections.
+                          </p>
+                        ) : null}
+
+                        {!hasEnoughTeamSheetPlayers && selectedTeamSheetTeam ? (
+                          <p className="page-creation-overlay__helper">
+                            {`${selectedTeamSheetTeam.label} has ${selectedTeamSheetTeam.players.length} players available, but the graphic needs ${teamSheetPlayerLimit}.`}
+                          </p>
+                        ) : null}
+
+                        <section className="page-creation-overlay__team-sheet-section">
+                          <div className="page-creation-overlay__team-sheet-section-header">
+                            <h5>Players</h5>
+                            <span>{`${selectedTeamSheetPlayerIds.length}/${teamSheetPlayerLimit}`}</span>
+                          </div>
+
+                          <div className="page-creation-overlay__team-sheet-grid">
+                            {(selectedTeamSheetTeam?.players || []).map((item) => {
+                              const isSelected = selectedTeamSheetPlayerIds.includes(item.id);
+                              const hasReachedLimit = selectedTeamSheetPlayerIds.length >= teamSheetPlayerLimit;
+
+                              return (
                                 <label
                                   className={`page-creation-overlay__team-sheet-item ${
-                                    selectedFieldPathSet.has(item.id) ? "selected" : ""
-                                  } ${item.type === "players" || item.type === "subs" ? "page-creation-overlay__team-sheet-item--player" : ""}`}
+                                    isSelected ? "selected" : ""
+                                  } page-creation-overlay__team-sheet-item--player`}
                                   key={item.id}
                                 >
                                   <input
                                     type="checkbox"
-                                    checked={selectedFieldPathSet.has(item.id)}
+                                    checked={isSelected}
+                                    disabled={!isSelected && hasReachedLimit}
                                     onChange={() => {
-                                      setSelectedFieldPaths((currentPaths) =>
-                                        currentPaths.includes(item.id)
-                                          ? currentPaths.filter((currentPath) => currentPath !== item.id)
-                                          : [...currentPaths, item.id]
+                                      setSelectedTeamSheetPlayerIds((currentIds) =>
+                                        currentIds.includes(item.id)
+                                          ? currentIds.filter((playerId) => playerId !== item.id)
+                                          : [...currentIds, item.id].slice(0, teamSheetPlayerLimit)
                                       );
                                     }}
                                   />
@@ -1554,14 +2701,69 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
                                     <span className="page-creation-overlay__team-sheet-item-badge">{item.badge}</span>
                                     <span className="page-creation-overlay__team-sheet-item-copy">
                                       <strong>{item.primary}</strong>
-                                      <small>{item.secondary || item.teamLabel}</small>
+                                      <small>{item.secondary || selectedTeamSheetTeam?.label}</small>
                                     </span>
                                   </span>
                                 </label>
-                              ))}
-                            </div>
-                          </section>
-                        ))}
+                              );
+                            })}
+                          </div>
+                        </section>
+
+                        <label className="page-creation-overlay__selector">
+                          <span>Coach</span>
+                          <select
+                            value={selectedTeamSheetCoachId}
+                            onChange={(event) => setSelectedTeamSheetCoachId(event.target.value)}
+                          >
+                            <option value="">Select coach</option>
+                            {(selectedTeamSheetTeam?.coaches || []).map((coach) => (
+                              <option key={coach.id} value={coach.id}>
+                                {coach.primary}
+                                {coach.secondary ? ` | ${coach.secondary}` : ""}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+
+                        <label className="page-creation-overlay__selector">
+                          <span>Head coach</span>
+                          <select
+                            value={selectedTeamSheetHeadCoachId}
+                            onChange={(event) => setSelectedTeamSheetHeadCoachId(event.target.value)}
+                          >
+                            <option value="">Select head coach</option>
+                            {(selectedTeamSheetTeam?.coaches || []).map((coach) => (
+                              <option key={coach.id} value={coach.id}>
+                                {coach.primary}
+                                {coach.secondary ? ` | ${coach.secondary}` : ""}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+
+                        <label className="page-creation-overlay__selector">
+                          <span>Team name</span>
+                          <select
+                            value={selectedTeamSheetName}
+                            onChange={(event) => setSelectedTeamSheetName(event.target.value)}
+                          >
+                            <option value="">Select team name</option>
+                            {(selectedTeamSheetTeam?.teamNameOptions || []).map((teamNameOption) => (
+                              <option key={teamNameOption.value} value={teamNameOption.value}>
+                                {teamNameOption.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+
+                        <section className="page-creation-overlay__team-sheet-section">
+                          <div className="page-creation-overlay__team-sheet-section-header">
+                            <h5>Graphic Data</h5>
+                            <span>{filteredSelectedData?.players_list?.data?.length || 0}</span>
+                          </div>
+                          <pre className="page-creation-overlay__json">{stringifyJson(filteredSelectedData || {})}</pre>
+                        </section>
                       </div>
                     </div>
                   </div>
@@ -1688,10 +2890,12 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
               submitting ||
               loadingTemplates ||
               ((previewMode === "groups" ||
+                previewMode === "head-to-head" ||
                 previewMode === "match-stats" ||
-                previewMode === "team-sheets" ||
                 previewMode === "top-player-scores") &&
                 !selectedFieldPaths.length) ||
+              (previewMode === "standings" && !standingsPoolPayloads.length) ||
+              (previewMode === "team-sheets" && !hasCompleteTeamSheetSelection) ||
               !selectedShow ||
               !preparedTemplate ||
               !filteredSelectedData ||

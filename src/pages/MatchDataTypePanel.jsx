@@ -104,6 +104,7 @@ export default function MatchDataTypePanel() {
 
   const onConfirmPageCreation = async ({
     createdPage,
+    createdPages,
     selectedCoverage,
     selectedData,
     selectedFieldPaths,
@@ -130,21 +131,35 @@ export default function MatchDataTypePanel() {
       titleSegments.push(selectedStat);
     }
 
-    addCreatedPage({
-      id: `${Date.now()}-${state.selectedDataType.dataType}`,
-      title: createdPage.name || `${titleSegments.join(" | ")} | ${template.templateName || template.name}`,
-      profileName: state.activeProfile.name,
-      createdAt: new Date().toISOString(),
-      pageUri: createdPage.uri,
-      selectedCoverage,
-      selectedData,
-      selectedFieldPaths,
-      selectedRound,
-      selectedStat,
-      templateName: template.templateName || template.name,
-      templateMapping: template.mapping,
-      fieldValues,
+    const pageResults = Array.isArray(createdPages) && createdPages.length
+      ? createdPages
+      : [{ createdPage, fieldValues, selectedData }];
+
+    pageResults.forEach((pageResult, index) => {
+      if (!pageResult?.createdPage) {
+        return;
+      }
+
+      addCreatedPage({
+        id: `${Date.now()}-${state.selectedDataType.dataType}-${index + 1}`,
+        title:
+          pageResult.createdPage.name ||
+          pageResult.pageTitle ||
+          `${titleSegments.join(" | ")} | ${template.templateName || template.name}`,
+        profileName: state.activeProfile.name,
+        createdAt: new Date().toISOString(),
+        pageUri: pageResult.createdPage.uri,
+        selectedCoverage,
+        selectedData: pageResult.selectedData || selectedData,
+        selectedFieldPaths,
+        selectedRound,
+        selectedStat,
+        templateName: template.templateName || template.name,
+        templateMapping: template.mapping,
+        fieldValues: pageResult.fieldValues || fieldValues,
+      });
     });
+
     setIsOverlayOpen(false);
   };
 
