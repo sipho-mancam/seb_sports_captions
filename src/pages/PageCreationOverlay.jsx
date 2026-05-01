@@ -593,7 +593,7 @@ function buildManifestLikeMatchStatsData(selectedData, selectedStatPaths, option
     "away_value",
     "away_suffix",
   ]);
-  const teamLogoKeys = getMatchStatsSectionItemKeys(manifest?.team_logos, ["home_logo", "away_logo"]);
+  const teamLogoKeys = getMatchStatsSectionItemKeys(manifest?.team_logos, manifest ? [] : ["home_logo", "away_logo"]);
   const pageStateKeys = getMatchStatsSectionItemKeys(manifest?.page_state, ["value"]);
 
   return {
@@ -646,17 +646,21 @@ function buildManifestLikeMatchStatsData(selectedData, selectedStatPaths, option
       }),
       list_item: statisticsKeys,
     },
-    team_logos: {
-      data: teamLogoKeys.reduce((result, itemKey) => {
-        result[itemKey] =
-          buildImageManifestPayload(itemKey, {
-            awayTeamName: getTeamImageNameValue(awayTeam),
-            homeTeamName: getTeamImageNameValue(homeTeam),
-          }) || "";
-        return result;
-      }, {}),
-      item: teamLogoKeys,
-    },
+    ...(teamLogoKeys.length
+      ? {
+          team_logos: {
+            data: teamLogoKeys.reduce((result, itemKey) => {
+              result[itemKey] =
+                buildImageManifestPayload(itemKey, {
+                  awayTeamName: getTeamImageNameValue(awayTeam),
+                  homeTeamName: getTeamImageNameValue(homeTeam),
+                }) || "";
+              return result;
+            }, {}),
+            item: teamLogoKeys,
+          },
+        }
+      : {}),
   };
 }
 
