@@ -17,23 +17,18 @@ const defaultProfileForm = {
   image_assets_path: "",
 };
 
-function getSelectedFilePath(file) {
-  return file?.path || "";
-}
-
-function createDirectoryPickerAttributes() {
-  return {
-    directory: "",
-    webkitdirectory: "",
-  };
-}
-
 function formatCreatedAt(value) {
   try {
     return new Date(value).toLocaleString();
   } catch {
     return value;
   }
+}
+
+function notifyRequestError(message, fallbackMessage) {
+  const resolvedMessage = message || fallbackMessage;
+  window.alert(resolvedMessage);
+  return resolvedMessage;
 }
 
 export default function MatchProfilePanel() {
@@ -61,39 +56,6 @@ export default function MatchProfilePanel() {
     });
   };
 
-  const onSelectFilePath = (fieldName) => (event) => {
-    const selectedFile = event.target.files?.[0];
-    const selectedPath = getSelectedFilePath(selectedFile);
-
-    if (!selectedPath) {
-      return;
-    }
-
-    setProfileForm((current) => ({
-      ...current,
-      [fieldName]: selectedPath,
-    }));
-
-    event.target.value = "";
-  };
-
-  const onSelectDirectoryPath = (fieldName) => (event) => {
-    const selectedFile = event.target.files?.[0];
-    const selectedPath = getSelectedFilePath(selectedFile);
-
-    if (!selectedPath) {
-      return;
-    }
-
-    const normalizedPath = selectedPath.replace(/[\\/][^\\/]+$/, "");
-    setProfileForm((current) => ({
-      ...current,
-      [fieldName]: normalizedPath,
-    }));
-
-    event.target.value = "";
-  };
-
   useEffect(() => {
     let mounted = true;
 
@@ -108,7 +70,8 @@ export default function MatchProfilePanel() {
         }
       } catch (error) {
         if (mounted) {
-          setProfileError(error.message || "Failed to load active profile.");
+          const message = notifyRequestError(error.message, "Failed to load active profile.");
+          setProfileError(message);
           setActiveProfile(null);
         }
       } finally {
@@ -138,7 +101,8 @@ export default function MatchProfilePanel() {
       setIsCreatingProfile(false);
       updateProfileFormFromActive(active);
     } catch (error) {
-      setCreateError(error.message || "Failed to create profile.");
+      const message = notifyRequestError(error.message, "Failed to create profile.");
+      setCreateError(message);
     }
   };
 
@@ -162,8 +126,9 @@ export default function MatchProfilePanel() {
       const profileList = await getProfiles();
       setProfiles(profileList);
     } catch (error) {
+      const message = notifyRequestError(error.message, "Failed to load profiles.");
       setProfiles([]);
-      setProfilesError(error.message || "Failed to load profiles.");
+      setProfilesError(message);
     } finally {
       setLoadingProfiles(false);
     }
@@ -179,7 +144,8 @@ export default function MatchProfilePanel() {
       updateProfileFormFromActive(active);
       setIsProfilePickerOpen(false);
     } catch (error) {
-      setProfilesError(error.message || "Failed to activate profile.");
+      const message = notifyRequestError(error.message, "Failed to activate profile.");
+      setProfilesError(message);
     } finally {
       setActivatingProfileName("");
     }
@@ -264,14 +230,14 @@ export default function MatchProfilePanel() {
             <input
               type="text"
               value={profileForm.graphic_manifest_path}
-              readOnly
-              placeholder="Choose the graphics manifest directory"
+              onChange={(event) =>
+                setProfileForm((current) => ({
+                  ...current,
+                  graphic_manifest_path: event.target.value,
+                }))
+              }
+              placeholder="C:\\path\\to\\graphics-manifest"
               required
-            />
-            <input
-              type="file"
-              {...createDirectoryPickerAttributes()}
-              onChange={onSelectDirectoryPath("graphic_manifest_path")}
             />
           </label>
 
@@ -292,14 +258,14 @@ export default function MatchProfilePanel() {
             <input
               type="text"
               value={profileForm.stats_page_defaults_path}
-              readOnly
-              placeholder="Choose the stats defaults file"
+              onChange={(event) =>
+                setProfileForm((current) => ({
+                  ...current,
+                  stats_page_defaults_path: event.target.value,
+                }))
+              }
+              placeholder="C:\\path\\to\\stats-defaults.json"
               required
-            />
-            <input
-              type="file"
-              accept=".json,application/json"
-              onChange={onSelectFilePath("stats_page_defaults_path")}
             />
           </label>
 
@@ -308,14 +274,14 @@ export default function MatchProfilePanel() {
             <input
               type="text"
               value={profileForm.image_assets_path}
-              readOnly
-              placeholder="Choose the image assets directory"
+              onChange={(event) =>
+                setProfileForm((current) => ({
+                  ...current,
+                  image_assets_path: event.target.value,
+                }))
+              }
+              placeholder="C:\\path\\to\\image-assets"
               required
-            />
-            <input
-              type="file"
-              {...createDirectoryPickerAttributes()}
-              onChange={onSelectDirectoryPath("image_assets_path")}
             />
           </label>
 

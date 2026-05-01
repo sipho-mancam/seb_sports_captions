@@ -3,6 +3,12 @@ import { Navigate, useNavigate } from "react-router-dom";
 import { useAppFlow } from "../context/AppFlowContext";
 import { getAvailableTournaments } from "../services/graphicsService";
 
+function notifyRequestError(message, fallbackMessage) {
+  const resolvedMessage = message || fallbackMessage;
+  window.alert(resolvedMessage);
+  return resolvedMessage;
+}
+
 export default function TournamentPage() {
   const navigate = useNavigate();
   const [search, setSearch] = useState("");
@@ -37,7 +43,8 @@ export default function TournamentPage() {
         }
       } catch (loadError) {
         if (mounted) {
-          setError(loadError.message || "Failed to load competitions.");
+          const message = notifyRequestError(loadError.message, "Failed to load competitions.");
+          setError(message);
           setCompetitions([]);
         }
       } finally {

@@ -1195,9 +1195,29 @@ body {
 }
 
 .page-creation-overlay__team-sheet-item-copy strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
   color: #0f172a;
   font-size: 0.92rem;
   line-height: 1.3;
+}
+
+.page-creation-overlay__team-sheet-image-status {
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 999px;
+  flex: 0 0 auto;
+}
+
+.page-creation-overlay__team-sheet-image-status--found {
+  background: #16a34a;
+  box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.14);
+}
+
+.page-creation-overlay__team-sheet-image-status--missing {
+  background: #dc2626;
+  box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.14);
 }
 
 .page-creation-overlay__team-sheet-item-copy small {
@@ -1362,8 +1382,32 @@ body {
 
 .page-creation-overlay__actions {
   display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.page-creation-overlay__submit-status {
+  margin: 0;
+  padding: 0.75rem 0.95rem;
+  border-radius: 12px;
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.page-creation-overlay__submit-status--success {
+  background: rgba(22, 163, 74, 0.12);
+  color: #166534;
+}
+
+.page-creation-overlay__submit-status--error {
+  background: rgba(220, 38, 38, 0.12);
+  color: #991b1b;
+}
+
+.page-creation-overlay__actions > button:first-of-type {
+  margin-left: auto;
   justify-content: flex-end;
-  gap: 0.75rem;
 }
 
 .page-creation-overlay__confirm {

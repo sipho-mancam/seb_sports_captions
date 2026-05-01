@@ -19,6 +19,30 @@ const tournamentData = {
 
 const BASE_URL = "http://localhost:8080";
 
+async function resolveResponseErrorMessage(response, fallbackMessage) {
+  try {
+    const payload = await response.clone().json();
+    if (typeof payload?.message === "string" && payload.message.trim()) {
+      return payload.message.trim();
+    }
+  } catch {
+    try {
+      const text = await response.clone().text();
+      if (typeof text === "string" && text.trim()) {
+        return text.trim();
+      }
+    } catch {
+      return fallbackMessage;
+    }
+  }
+
+  return fallbackMessage;
+}
+
+async function throwRequestError(response, fallbackMessage) {
+  throw new Error(await resolveResponseErrorMessage(response, fallbackMessage));
+}
+
 function sanitizeQueryUri(value) {
   if (typeof value !== "string") {
     return "";
@@ -87,7 +111,7 @@ export async function getRugbyVizDataTypes() {
   const response = await fetch(endpoint);
 
   if (!response.ok) {
-    throw new Error(`Failed to load rugby data types (${response.status})`);
+    await throwRequestError(response, `Failed to load rugby data types (${response.status})`);
   }
 
   const payload = await response.json();
@@ -171,7 +195,7 @@ export async function getRugbyVizSelectedData(selectedDataType, params = {}) {
 
   const response = await fetch(`${BASE_URL}${resolvedQuery}`);
   if (!response.ok) {
-    throw new Error(`Failed to load selected data (${response.status})`);
+    await throwRequestError(response, `Failed to load selected data (${response.status})`);
   }
 
   return response.json();
@@ -482,6 +506,10 @@ function decodeHtmlEntities(value) {
 function normalizeFieldStringValue(value) {
   const decodedValue = decodeHtmlEntities(String(value));
 
+  if (decodedValue.trim() === "-") {
+    return "-";
+  }
+
   return decodedValue
     .normalize("NFKD")
     .replace(/[\u0300-\u036f]/g, "")
@@ -507,6 +535,64 @@ function getManifestSectionData(sourceValue) {
   }
 
   return sourceValue;
+}
+
+function getManifestSectionItemKeys(config) {
+  if (Array.isArray(config?.list_item)) {
+    return config.list_item;
+  }
+
+  if (Array.isArray(config?.item)) {
+    return config.item;
+  }
+
+  if (typeof config?.item === "string" && config.item.trim()) {
+    return [config.item.trim()];
+  }
+
+  return null;
+}
+
+function getManifestSourceKeys(sourceKey) {
+  if (typeof sourceKey !== "string") {
+    return [];
+  }
+
+  const normalizedKey = sourceKey.trim();
+  if (!normalizedKey) {
+    return [];
+  }
+
+  if (normalizedKey.startsWith("#img:")) {
+    const imageKey = normalizedKey.slice(5).trim();
+    return [normalizedKey, imageKey, imageKey.replace(/:/g, "_"), imageKey.replace(/:/g, ".")].filter(Boolean);
+  }
+
+  return [normalizedKey];
+}
+
+function getManifestObjectValue(sourceItem, sourceKey) {
+  const candidateKeys = getManifestSourceKeys(sourceKey);
+
+  for (const candidateKey of candidateKeys) {
+    if (Object.prototype.hasOwnProperty.call(sourceItem, candidateKey)) {
+      return sourceItem[candidateKey];
+    }
+  }
+
+  return sourceItem.value ?? "";
+}
+
+function getSingleFieldIds(config) {
+  if (!Array.isArray(config?.fields)) {
+    return null;
+  }
+
+  if (config.fields.length === 1 && Array.isArray(config.fields[0])) {
+    return config.fields[0];
+  }
+
+  return config.fields;
 }
 
 export function buildFieldValuesFromTemplate(mapping, selectedData) {
@@ -537,11 +623,7 @@ export function buildFieldValuesFromTemplate(mapping, selectedData) {
       : Array.isArray(config.fields) && Array.isArray(config.fields[0])
         ? config.fields
         : null;
-    const listItemKeys = Array.isArray(config.list_item)
-      ? config.list_item
-      : Array.isArray(config.item)
-        ? config.item
-        : null;
+    const listItemKeys = getManifestSectionItemKeys(config);
 
     if (Array.isArray(listFields) && Array.isArray(listItemKeys)) {
       const sourceList = getManifestSectionData(extractValue(selectedData, key));
@@ -560,7 +642,7 @@ export function buildFieldValuesFromTemplate(mapping, selectedData) {
           if (Array.isArray(sourceItem)) {
             value = sourceItem[columnIndex] ?? "";
           } else if (sourceItem && typeof sourceItem === "object") {
-            value = sourceItem[sourceKey] ?? sourceItem.value ?? "";
+            value = getManifestObjectValue(sourceItem, sourceKey);
           } else if (sourceItem !== undefined) {
             value = sourceItem;
           }
@@ -572,12 +654,8 @@ export function buildFieldValuesFromTemplate(mapping, selectedData) {
       return;
     }
 
-    const singleFields = Array.isArray(config.fields) ? config.fields : null;
-    const singleItemKeys = Array.isArray(config.item)
-      ? config.item
-      : Array.isArray(config.list_item)
-        ? config.list_item
-        : null;
+    const singleFields = getSingleFieldIds(config);
+    const singleItemKeys = getManifestSectionItemKeys(config);
 
     if (Array.isArray(singleFields) && Array.isArray(singleItemKeys)) {
       const sourceItem = getManifestSectionData(extractValue(selectedData, key));
@@ -589,7 +667,7 @@ export function buildFieldValuesFromTemplate(mapping, selectedData) {
         if (Array.isArray(sourceItem)) {
           value = sourceItem[index] ?? "";
         } else if (sourceItem && typeof sourceItem === "object") {
-          value = sourceItem[sourceKey] ?? sourceItem.value ?? "";
+          value = getManifestObjectValue(sourceItem, sourceKey);
         } else if (sourceItem !== undefined) {
           value = sourceItem;
         }
@@ -607,7 +685,7 @@ export async function getGraphicShows() {
   const response = await fetch(endpoint);
 
   if (!response.ok) {
-    throw new Error(`Failed to load MSE shows (${response.status})`);
+    await throwRequestError(response, `Failed to load MSE shows (${response.status})`);
   }
 
   const showsPayload = await response.json();
@@ -631,7 +709,7 @@ export async function getGraphicTemplates(showEntry) {
   });
 
   if (!bucketResponse.ok) {
-    throw new Error(`Failed to discover buckets (${bucketResponse.status})`);
+    await throwRequestError(bucketResponse, `Failed to discover buckets (${bucketResponse.status})`);
   }
 
   const bucketPayload = await bucketResponse.json();
@@ -650,7 +728,7 @@ export async function getGraphicTemplates(showEntry) {
   );
 
   if (!bucketEntriesResponse.ok) {
-    throw new Error(`Failed to load bucket entries (${bucketEntriesResponse.status})`);
+    await throwRequestError(bucketEntriesResponse, `Failed to load bucket entries (${bucketEntriesResponse.status})`);
   }
 
   const bucketEntriesPayload = await bucketEntriesResponse.json();
@@ -674,7 +752,7 @@ export async function getGraphicManifest(manifestId) {
   );
 
   if (!response.ok) {
-    throw new Error(`Failed to load graphic manifest (${response.status})`);
+    await throwRequestError(response, `Failed to load graphic manifest (${response.status})`);
   }
 
   return response.json();
@@ -688,7 +766,7 @@ export async function prepareGraphicTemplate(templateEntry) {
   });
 
   if (!response.ok) {
-    throw new Error(`Failed to prepare template (${response.status})`);
+    await throwRequestError(response, `Failed to prepare template (${response.status})`);
   }
 
   return normalizePreparedTemplate(await response.json(), templateEntry);
@@ -707,7 +785,7 @@ export async function createGraphicPage({ preparedTemplate, fieldValues }) {
   });
 
   if (!response.ok) {
-    throw new Error(`Failed to create page (${response.status})`);
+    await throwRequestError(response, `Failed to create page (${response.status})`);
   }
 
   const payload = await response.json();
@@ -744,7 +822,7 @@ export async function getActiveProfile() {
   }
 
   if (!response.ok) {
-    throw new Error(`Failed to load active profile (${response.status})`);
+    await throwRequestError(response, `Failed to load active profile (${response.status})`);
   }
 
   return normalizeProfile(await response.json());
@@ -755,7 +833,7 @@ export async function getProfiles() {
   const response = await fetch(endpoint);
 
   if (!response.ok) {
-    throw new Error(`Failed to load profiles (${response.status})`);
+    await throwRequestError(response, `Failed to load profiles (${response.status})`);
   }
 
   const payload = await response.json();
@@ -779,7 +857,7 @@ export async function createProfile(profile) {
   });
 
   if (!response.ok) {
-    throw new Error(`Failed to create profile (${response.status})`);
+    await throwRequestError(response, `Failed to create profile (${response.status})`);
   }
 
   return normalizeProfile(await response.json());
@@ -794,10 +872,26 @@ export async function setActiveProfile(profileName) {
   });
 
   if (!response.ok) {
-    throw new Error(`Failed to set active profile (${response.status})`);
+    await throwRequestError(response, `Failed to set active profile (${response.status})`);
   }
 
   return normalizeProfile(await response.json());
+}
+
+export async function getActiveProfileStatsPageDefaults() {
+  const endpoint = `${BASE_URL}/api/v1/sportscaption/profiles/active/stats-page-defaults`;
+  const response = await fetch(endpoint);
+
+  if (response.status === 404) {
+    return {};
+  }
+
+  if (!response.ok) {
+    await throwRequestError(response, `Failed to load active profile stats defaults (${response.status})`);
+  }
+
+  const payload = await response.json();
+  return payload && typeof payload === "object" && !Array.isArray(payload) ? payload : {};
 }
 
 function getTeamName(match, side) {
@@ -868,7 +962,7 @@ export async function fetchRugbyMatchesByDate(fromDate, competitionId, seasonId)
   const response = await fetch(endpoint);
 
   if (!response.ok) {
-    throw new Error(`Failed to load matches (${response.status})`);
+    await throwRequestError(response, `Failed to load matches (${response.status})`);
   }
 
   const payload = await response.json();
@@ -950,7 +1044,7 @@ export async function getAvailableTournaments(sport, source) {
     const response = await fetch(endpoint);
 
     if (!response.ok) {
-      throw new Error(`Failed to load competitions from API (${response.status})`);
+      await throwRequestError(response, `Failed to load competitions from API (${response.status})`);
     }
 
     const data = await response.json();
@@ -981,7 +1075,7 @@ export async function sendToMseServer(payload, mseUrlOverride) {
     });
 
     if (!response.ok) {
-      throw new Error(`MSE server returned ${response.status}`);
+      await throwRequestError(response, `MSE server returned ${response.status}`);
     }
 
     const data = await response.json().catch(() => ({}));

@@ -3,6 +3,12 @@ import { Navigate } from "react-router-dom";
 import { useAppFlow } from "../context/AppFlowContext";
 import { fetchGraphicsData, sendToMseServer } from "../services/graphicsService";
 
+function notifyRequestError(message, fallbackMessage) {
+  const resolvedMessage = message || fallbackMessage;
+  window.alert(resolvedMessage);
+  return resolvedMessage;
+}
+
 export default function GraphicsPage() {
   const { state, setLoadedGraphics, setMseResponse } = useAppFlow();
   const [loading, setLoading] = useState(false);
@@ -47,7 +53,8 @@ export default function GraphicsPage() {
         }
       } catch (loadError) {
         if (mounted) {
-          setError(loadError.message || "Failed to load graphics.");
+          const message = notifyRequestError(loadError.message, "Failed to load graphics.");
+          setError(message);
         }
       } finally {
         if (mounted) {
@@ -79,6 +86,7 @@ export default function GraphicsPage() {
     try {
       setSending(true);
       setMseResponse(null);
+      setError("");
       const response = await sendToMseServer({
         sport: state.selectedSport,
         tournament: state.selectedTournament,
@@ -91,6 +99,10 @@ export default function GraphicsPage() {
         graphics: state.loadedGraphics,
       }, state.activeProfile?.mseUrl);
       setMseResponse(response);
+    } catch (sendError) {
+      const message = notifyRequestError(sendError.message, "Failed to send graphics to the MSE server.");
+      setError(message);
+      setMseResponse(null);
     } finally {
       setSending(false);
     }

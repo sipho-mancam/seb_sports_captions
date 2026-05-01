@@ -6,6 +6,7 @@ import {
   buildFieldValuesFromTemplate,
   createGraphicPage,
   getGraphicManifest,
+  getActiveProfileStatsPageDefaults,
   getGraphicShows,
   getGraphicTemplates,
   getRugbyVizSelectedData,
@@ -207,18 +208,92 @@ function getDefaultMatchStatSuffix(path) {
   return String(path || "").toLowerCase().includes("percent") ? "%" : "";
 }
 
+function formatMatchStatValue(value) {
+  if (value === null || value === undefined || value === "" || value === "-") {
+    return "0";
+  }
+
+  const normalizedString = String(value).trim();
+  if (!normalizedString || normalizedString === "-") {
+    return "0";
+  }
+
+  const numericValue = Number(normalizedString.replace(/,/g, ""));
+  if (Number.isFinite(numericValue)) {
+    return String(Math.round(numericValue));
+  }
+
+  return normalizedString;
+}
+
 function getMatchStatSelectableItems(selectedData, selectedStatPaths) {
   const homeStats = selectedData?.homeTeam?.teamStats || {};
   const awayStats = selectedData?.awayTeam?.teamStats || {};
 
   return selectedStatPaths.map((path) => ({
-    awayValue: formatListItemValue(getNestedValue(awayStats, path)),
+    awayValue: formatMatchStatValue(getNestedValue(awayStats, path)),
     defaultSuffix: getDefaultMatchStatSuffix(path),
-    homeValue: formatListItemValue(getNestedValue(homeStats, path)),
+    homeValue: formatMatchStatValue(getNestedValue(homeStats, path)),
     id: path,
     label: formatStatDescription(path),
     path,
   }));
+}
+
+function normalizeStatLabel(value) {
+  return String(value || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
+
+function resolveMatchStatDefaultsForPage(matchStatItems, statsPageDefaults, selectedStatsPageKey, selectionLimit) {
+  const defaultDescriptions = Array.isArray(statsPageDefaults?.[selectedStatsPageKey])
+    ? statsPageDefaults[selectedStatsPageKey]
+    : [];
+
+  if (!defaultDescriptions.length) {
+    return {
+      orderedItems: matchStatItems,
+      selectedPaths: matchStatItems.slice(0, selectionLimit).map((item) => item.path),
+    };
+  }
+
+  const itemsByLabel = matchStatItems.reduce((result, item) => {
+    const normalizedLabel = normalizeStatLabel(item.label);
+    if (!result.has(normalizedLabel)) {
+      result.set(normalizedLabel, []);
+    }
+
+    result.get(normalizedLabel).push(item);
+    return result;
+  }, new Map());
+
+  const selectedItems = [];
+  defaultDescriptions.forEach((description) => {
+    const matchingItems = itemsByLabel.get(normalizeStatLabel(description)) || [];
+    const nextItem = matchingItems.find((item) => !selectedItems.some((selectedItem) => selectedItem.path === item.path));
+
+    if (nextItem) {
+      selectedItems.push(nextItem);
+    }
+  });
+
+  const orderedItems = [
+    ...selectedItems,
+    ...matchStatItems.filter((item) => !selectedItems.some((selectedItem) => selectedItem.path === item.path)),
+  ];
+
+  return {
+    orderedItems,
+    selectedPaths: orderedItems.slice(0, selectionLimit).filter((item) => selectedItems.includes(item)).map((item) => item.path),
+  };
+}
+
+function notifyRequestError(message, fallbackMessage) {
+  const resolvedMessage = message || fallbackMessage;
+  window.alert(resolvedMessage);
+  return resolvedMessage;
 }
 
 function getTeamLogoValue(team) {
@@ -230,7 +305,58 @@ function getTeamBadgeValue(team) {
 }
 
 function getTeamNameValue(team) {
-  return team?.shortName || team?.name || "";
+  return team?.name || team?.shortName || "";
+}
+
+function getTeamImageNameValue(team) {
+  return getTeamNameValue(team);
+}
+
+function buildImageManifestPayload(token, options = {}) {
+  if (typeof token !== "string" || !token.startsWith("#img:")) {
+    return "";
+  }
+
+  const descriptor = token.slice(5).trim();
+  if (!descriptor) {
+    return "";
+  }
+
+  const segments = descriptor.split(":").map((segment) => segment.trim()).filter(Boolean);
+  const primaryToken = segments[0] || "";
+  const secondaryToken = segments[1] || "";
+  const homeTeamName = options.homeTeamName || "";
+  const awayTeamName = options.awayTeamName || "";
+  const teamName = options.teamName || "";
+  const playerName = options.playerName || "";
+
+  const resolveTeamName = () => {
+    switch (primaryToken) {
+      case "home_team_logo":
+      case "home_team":
+        return homeTeamName || teamName;
+      case "away_team_logo":
+      case "away_team":
+        return awayTeamName || teamName;
+      default:
+        return teamName || homeTeamName || awayTeamName;
+    }
+  };
+
+  const resolvedTeamName = resolveTeamName();
+  if (!resolvedTeamName) {
+    return "";
+  }
+
+  if (primaryToken.endsWith("_logo")) {
+    return `#img:${resolvedTeamName}`;
+  }
+
+  if (secondaryToken === "player" && playerName) {
+    return `#img:${resolvedTeamName}:player:${playerName}`;
+  }
+
+  return "";
 }
 
 function getTeamScoreValue(team) {
@@ -321,7 +447,13 @@ function buildManifestLikeMatchStatsData(selectedData, selectedStatPaths, option
           home_team_name: getTeamNameValue(homeTeam),
           period_label: getPeriodLabelValue(selectedData),
         };
-        result[itemKey] = valueMap[itemKey] ?? "";
+        result[itemKey] =
+          valueMap[itemKey] ??
+          buildImageManifestPayload(itemKey, {
+            awayTeamName: getTeamImageNameValue(awayTeam),
+            homeTeamName: getTeamImageNameValue(homeTeam),
+          }) ??
+          "";
         return result;
       }, {}),
       item: matchHeaderKeys,
@@ -352,7 +484,11 @@ function buildManifestLikeMatchStatsData(selectedData, selectedStatPaths, option
     },
     team_logos: {
       data: teamLogoKeys.reduce((result, itemKey) => {
-        result[itemKey] = "";
+        result[itemKey] =
+          buildImageManifestPayload(itemKey, {
+            awayTeamName: getTeamImageNameValue(awayTeam),
+            homeTeamName: getTeamImageNameValue(homeTeam),
+          }) || "";
         return result;
       }, {}),
       item: teamLogoKeys,
@@ -652,6 +788,51 @@ function getPlayerDisplayName(player) {
   return getPersonDisplayName(player, "Player");
 }
 
+function normalizeComparisonValue(value) {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+}
+
+function getImageResolutionFailureName(message) {
+  const normalizedMessage = String(message || "");
+  const directMatch = normalizedMessage.match(/Unable to resolve (?:player|team) image for ['"]([^'"]+)['"]/i);
+
+  if (directMatch?.[1]) {
+    return directMatch[1].trim();
+  }
+
+  const fallbackMatch = normalizedMessage.match(/Unable to resolve .*?image.*?['"]([^'"]+)['"]/i);
+  return fallbackMatch?.[1]?.trim() || "";
+}
+
+function getTeamSheetPlayerIdsByName(teamOption, playerName) {
+  if (!teamOption || !playerName) {
+    return [];
+  }
+
+  const normalizedPlayerName = normalizeComparisonValue(playerName);
+
+  return teamOption.players
+    .filter((player) => {
+      const nameParts = getPersonNameParts(player.raw, "Player");
+      const candidateNames = [
+        player.primary,
+        getPlayerDisplayName(player.raw),
+        nameParts.displayName,
+        nameParts.name,
+        nameParts.surname,
+        [nameParts.name, nameParts.surname].filter(Boolean).join(" "),
+        player.raw?.knownName,
+        player.raw?.name,
+      ];
+
+      return candidateNames.some((candidateName) => normalizeComparisonValue(candidateName) === normalizedPlayerName);
+    })
+    .map((player) => player.id);
+}
+
 function getPersonNameParts(person, fallback = "Person") {
   const displayName = getPersonDisplayName(person, fallback).trim();
   const nameParts = displayName.split(/\s+/).filter(Boolean);
@@ -701,7 +882,13 @@ function getTeamSheetSectionConfig(config, fallbackItemKeys = []) {
   return {
     fields: Array.isArray(config.list) ? config.list : Array.isArray(config.fields) ? config.fields : [],
     itemKeys:
-      Array.isArray(config.list_item) ? config.list_item : Array.isArray(config.item) ? config.item : fallbackItemKeys,
+      Array.isArray(config.list_item)
+        ? config.list_item
+        : Array.isArray(config.item)
+          ? config.item
+          : typeof config.item === "string" && config.item.trim()
+            ? [config.item.trim()]
+            : fallbackItemKeys,
   };
 }
 
@@ -712,6 +899,7 @@ function getTeamSheetManifestSections(manifest) {
     coach: getTeamSheetSectionConfig(manifestConfig.coach, ["name", "surname"]),
     headCoach: getTeamSheetSectionConfig(manifestConfig.head_coach, ["name", "surname"]),
     playersList: getTeamSheetSectionConfig(manifestConfig.players_list, ["jersey_number", "name", "surname"]),
+    teamLogo: getTeamSheetSectionConfig(manifestConfig.team_logo, ["#img:team_logo"]),
     teamName: getTeamSheetSectionConfig(manifestConfig.team_name, ["name"]),
   };
 }
@@ -899,8 +1087,28 @@ function resolveTeamSheetPresetSelection(teamOptions, preset, playerLimit) {
   };
 }
 
-function getTeamSheetValueByKey(source, key, type, teamName = "") {
+function getTeamSheetValueByKey(source, key, type, teamName = "", options = {}) {
+  const imagePayload = buildImageManifestPayload(key, {
+    awayTeamName: options.awayTeamName,
+    homeTeamName: options.homeTeamName,
+    playerName: type === "player" ? getPlayerDisplayName(source) : "",
+    teamName: options.teamImageName || teamName,
+  });
+
+  if (imagePayload) {
+    return imagePayload;
+  }
+
   const normalizedKey = String(key || "").trim().toLowerCase();
+
+  if (type === "player" && ["image", "player_image", "playerimage"].includes(normalizedKey)) {
+    return buildImageManifestPayload("#img:team:player", {
+      awayTeamName: options.awayTeamName,
+      homeTeamName: options.homeTeamName,
+      playerName: getPlayerDisplayName(source),
+      teamName: options.teamImageName || teamName,
+    });
+  }
 
   if (type === "team") {
     if (normalizedKey === "name") {
@@ -946,8 +1154,12 @@ function buildManifestLikeTeamSheetData(selectedData, selection, manifestSection
   const playerItemKeys = manifestSections?.playersList?.itemKeys || ["jersey_number", "name", "surname"];
   const coachItemKeys = manifestSections?.coach?.itemKeys || ["name", "surname"];
   const headCoachItemKeys = manifestSections?.headCoach?.itemKeys || ["name", "surname"];
+  const teamLogoItemKeys = manifestSections?.teamLogo?.itemKeys || ["#img:team_logo"];
   const teamNameItemKeys = manifestSections?.teamName?.itemKeys || ["name"];
   const resolvedTeamName = selection.teamName || teamOption.teamNameOptions[0]?.value || teamOption.label;
+  const resolvedTeamImageName = getTeamImageNameValue(teamOption.teamData?.team || {}) || resolvedTeamName;
+  const homeTeamName = getTeamNameValue(selectedData?.homeTeam?.team || {});
+  const awayTeamName = getTeamNameValue(selectedData?.awayTeam?.team || {});
 
   return {
     competition: selectedData?.competition ?? null,
@@ -956,7 +1168,13 @@ function buildManifestLikeTeamSheetData(selectedData, selection, manifestSection
     coach: {
       data: coachItemKeys.reduce((result, itemKey) => {
         const coach = coachesById.get(selection.coachId) || null;
-        result[itemKey] = coach ? getTeamSheetValueByKey(coach, itemKey, "coach") : "";
+        result[itemKey] = coach
+          ? getTeamSheetValueByKey(coach, itemKey, "coach", resolvedTeamName, {
+              awayTeamName,
+              homeTeamName,
+              teamImageName: resolvedTeamImageName,
+            })
+          : "";
         return result;
       }, {}),
       item: coachItemKeys,
@@ -964,7 +1182,13 @@ function buildManifestLikeTeamSheetData(selectedData, selection, manifestSection
     head_coach: {
       data: headCoachItemKeys.reduce((result, itemKey) => {
         const headCoach = coachesById.get(selection.headCoachId) || coachesById.get(selection.coachId) || null;
-        result[itemKey] = headCoach ? getTeamSheetValueByKey(headCoach, itemKey, "coach") : "";
+        result[itemKey] = headCoach
+          ? getTeamSheetValueByKey(headCoach, itemKey, "coach", resolvedTeamName, {
+              awayTeamName,
+              homeTeamName,
+              teamImageName: resolvedTeamImageName,
+            })
+          : "";
         return result;
       }, {}),
       item: headCoachItemKeys,
@@ -975,15 +1199,34 @@ function buildManifestLikeTeamSheetData(selectedData, selection, manifestSection
         .filter(Boolean)
         .map((player) =>
           playerItemKeys.reduce((result, itemKey) => {
-            result[itemKey] = getTeamSheetValueByKey(player, itemKey, "player");
+            result[itemKey] = getTeamSheetValueByKey(player, itemKey, "player", resolvedTeamName, {
+              awayTeamName,
+              homeTeamName,
+              teamImageName: resolvedTeamImageName,
+            });
             return result;
           }, {})
         ),
       list_item: playerItemKeys,
     },
+    team_logo: {
+      data: teamLogoItemKeys.reduce((result, itemKey) => {
+        result[itemKey] = getTeamSheetValueByKey(teamOption.teamData?.team || {}, itemKey, "team", resolvedTeamName, {
+          awayTeamName,
+          homeTeamName,
+          teamImageName: resolvedTeamImageName,
+        });
+        return result;
+      }, {}),
+      item: teamLogoItemKeys,
+    },
     team_name: {
       data: teamNameItemKeys.reduce((result, itemKey) => {
-        result[itemKey] = getTeamSheetValueByKey(teamOption.teamData?.team || {}, itemKey, "team", resolvedTeamName);
+        result[itemKey] = getTeamSheetValueByKey(teamOption.teamData?.team || {}, itemKey, "team", resolvedTeamName, {
+          awayTeamName,
+          homeTeamName,
+          teamImageName: resolvedTeamImageName,
+        });
         return result;
       }, {}),
       item: teamNameItemKeys,
@@ -1142,6 +1385,17 @@ function getManifestSectionItemKeys(section) {
   return [];
 }
 
+function getStandingsItemValue(itemKey, row) {
+  if (typeof itemKey === "string" && itemKey.startsWith("#img:")) {
+    const teamImageName = getValueByAliases(row, ["team.name", "team_name", "teamName", "name"]);
+    return buildImageManifestPayload(itemKey, {
+      teamName: normalizeStandingsValue(teamImageName),
+    });
+  }
+
+  return row[itemKey] ?? "";
+}
+
 function buildManifestSectionData(section, preferredValue, fallbackAliases = [], source = null) {
   const itemKeys = getManifestSectionItemKeys(section);
 
@@ -1220,7 +1474,7 @@ function buildStandingsPoolPayloads(selectedData, selectedDataType, manifest, op
         }))
         .map((row) =>
           standingKeys.reduce((result, itemKey) => {
-            result[itemKey] = row[itemKey] ?? "";
+            result[itemKey] = getStandingsItemValue(itemKey, row);
             return result;
           }, {})
         );
@@ -1406,6 +1660,7 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
   const [loadingManifest, setLoadingManifest] = useState(false);
   const [preparingTemplate, setPreparingTemplate] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [submitStatus, setSubmitStatus] = useState(null);
   const [selectedStat, setSelectedStat] = useState("");
   const [selectedCoverage, setSelectedCoverage] = useState("");
   const [selectedRound, setSelectedRound] = useState("");
@@ -1414,6 +1669,11 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
   const [selectedTeamSheetCoachId, setSelectedTeamSheetCoachId] = useState("");
   const [selectedTeamSheetHeadCoachId, setSelectedTeamSheetHeadCoachId] = useState("");
   const [selectedTeamSheetName, setSelectedTeamSheetName] = useState("");
+  const [teamSheetPlayerImageStatusById, setTeamSheetPlayerImageStatusById] = useState({});
+  const [statsPageDefaults, setStatsPageDefaults] = useState({});
+  const [loadingStatsPageDefaults, setLoadingStatsPageDefaults] = useState(false);
+  const [statsPageDefaultsError, setStatsPageDefaultsError] = useState("");
+  const [selectedStatsPageKey, setSelectedStatsPageKey] = useState("");
 
   const requiresStatSelection = useMemo(
     () =>
@@ -1572,6 +1832,27 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
     [selectedData, teamStatPaths]
   );
 
+  const statsPageOptions = useMemo(
+    () => Object.keys(statsPageDefaults).filter((key) => Array.isArray(statsPageDefaults[key]) && statsPageDefaults[key].length),
+    [statsPageDefaults]
+  );
+
+  const resolvedMatchStatsDefaults = useMemo(
+    () =>
+      resolveMatchStatDefaultsForPage(
+        matchStatItems,
+        statsPageDefaults,
+        selectedStatsPageKey,
+        matchStatsSelectionLimit
+      ),
+    [matchStatItems, matchStatsSelectionLimit, selectedStatsPageKey, statsPageDefaults]
+  );
+
+  const orderedMatchStatItems = useMemo(
+    () => resolvedMatchStatsDefaults.orderedItems,
+    [resolvedMatchStatsDefaults]
+  );
+
   const previewMode = useMemo(() => {
     if (standingsPoolPayloads.length) {
       return "standings";
@@ -1602,6 +1883,7 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
 
   useEffect(() => {
     if (previewMode !== "team-sheets") {
+      setTeamSheetPlayerImageStatusById({});
       return;
     }
 
@@ -1619,6 +1901,23 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
       return fallbackTeamKey;
     });
   }, [previewMode, teamSheetPresetSelection?.teamKey, teamSheetTeamOptions]);
+
+  useEffect(() => {
+    setSubmitStatus(null);
+    setTeamSheetPlayerImageStatusById({});
+  }, [previewMode, selectedTeamSheetTeamKey]);
+
+  useEffect(() => {
+    if (previewMode !== "team-sheets") {
+      return;
+    }
+
+    setTeamSheetPlayerImageStatusById((currentStatusById) =>
+      Object.fromEntries(
+        Object.entries(currentStatusById).filter(([playerId]) => selectedTeamSheetPlayerIds.includes(playerId))
+      )
+    );
+  }, [previewMode, selectedTeamSheetPlayerIds]);
 
   const selectedTeamSheetTeam = useMemo(
     () => teamSheetTeamOptions.find((teamOption) => teamOption.teamKey === selectedTeamSheetTeamKey) || null,
@@ -1758,6 +2057,66 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
   }, [teamStatPaths]);
 
   useEffect(() => {
+    let mounted = true;
+
+    if (previewMode !== "match-stats") {
+      setStatsPageDefaults({});
+      setStatsPageDefaultsError("");
+      setSelectedStatsPageKey("");
+      setLoadingStatsPageDefaults(false);
+      return () => {
+        mounted = false;
+      };
+    }
+
+    async function loadStatsPageDefaults() {
+      setLoadingStatsPageDefaults(true);
+      setStatsPageDefaultsError("");
+
+      try {
+        const defaults = await getActiveProfileStatsPageDefaults();
+        if (!mounted) {
+          return;
+        }
+
+        setStatsPageDefaults(defaults);
+      } catch (loadError) {
+        if (!mounted) {
+          return;
+        }
+
+        const message = notifyRequestError(
+          loadError.message,
+          "Default stats fetch failed. Failed to load default stats pages."
+        );
+        setStatsPageDefaults({});
+        setStatsPageDefaultsError(message);
+      } finally {
+        if (mounted) {
+          setLoadingStatsPageDefaults(false);
+        }
+      }
+    }
+
+    loadStatsPageDefaults();
+
+    return () => {
+      mounted = false;
+    };
+  }, [previewMode, state.activeProfile?.name]);
+
+  useEffect(() => {
+    if (!statsPageOptions.length) {
+      setSelectedStatsPageKey("");
+      return;
+    }
+
+    setSelectedStatsPageKey((currentPageKey) =>
+      statsPageOptions.includes(currentPageKey) ? currentPageKey : statsPageOptions[0]
+    );
+  }, [statsPageOptions]);
+
+  useEffect(() => {
     if (previewMode === "standings") {
       setSelectedFieldPaths([]);
       return;
@@ -1769,7 +2128,7 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
     }
 
     if (previewMode === "match-stats") {
-      setSelectedFieldPaths(teamStatPaths.slice(0, matchStatsSelectionLimit));
+      setSelectedFieldPaths(resolvedMatchStatsDefaults.selectedPaths);
       return;
     }
 
@@ -1793,7 +2152,7 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
     }
 
     setSelectedFieldPaths([]);
-  }, [groupColumns, headToHeadFormItems, headToHeadMatchItems, headToHeadSummaryItems, matchStatsSelectionLimit, previewMode, teamStatPaths, topPlayerItems]);
+  }, [groupColumns, headToHeadFormItems, headToHeadMatchItems, headToHeadSummaryItems, previewMode, resolvedMatchStatsDefaults.selectedPaths, topPlayerItems]);
 
   useEffect(() => {
     if (previewMode !== "match-stats") {
@@ -2068,6 +2427,10 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
         setSelectedElementCollectionUri("");
       } catch (loadError) {
         if (mounted) {
+          const message = notifyRequestError(
+            loadError.message,
+            "Failed to load page creation data."
+          );
           setSelectedData(null);
           setShows([]);
           setTemplates([]);
@@ -2075,7 +2438,7 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
           setSelectedTemplateId("");
           setSelectedManifest(null);
           setSelectedElementCollectionUri("");
-          setError(loadError.message || "Failed to load page creation data.");
+          setError(message);
         }
       } finally {
         if (mounted) {
@@ -2134,11 +2497,12 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
         setSelectedElementCollectionUri(elementCollectionUri);
       } catch (loadError) {
         if (mounted) {
+          const message = notifyRequestError(loadError.message, "Failed to load templates.");
           setTemplates([]);
           setSelectedTemplateId("");
           setSelectedManifest(null);
           setSelectedElementCollectionUri("");
-          setError(loadError.message || "Failed to load templates.");
+          setError(message);
         }
       } finally {
         if (mounted) {
@@ -2194,8 +2558,9 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
         }
       } catch (loadError) {
         if (mounted) {
+          const message = notifyRequestError(loadError.message, "Failed to load graphic manifest.");
           setSelectedManifest(null);
-          setError(loadError.message || "Failed to load graphic manifest.");
+          setError(message);
         }
       } finally {
         if (mounted) {
@@ -2230,8 +2595,9 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
         }
       } catch (loadError) {
         if (mounted) {
+          const message = notifyRequestError(loadError.message, "Failed to prepare template.");
           setPreparedTemplate(null);
-          setError(loadError.message || "Failed to prepare template.");
+          setError(message);
         }
       } finally {
         if (mounted) {
@@ -2255,6 +2621,7 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
     try {
       setSubmitting(true);
       setError("");
+      setSubmitStatus(null);
 
       const fieldMapping = selectedManifest || preparedTemplate.mapping;
       const preparedTemplatePayload = {
@@ -2294,6 +2661,11 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
           },
         });
 
+        setSubmitStatus({
+          kind: "success",
+          message: `Created ${createdPages.length} pages successfully. Review the result and close the overlay when ready.`,
+        });
+
         return;
       }
 
@@ -2317,8 +2689,38 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
         },
         fieldValues,
       });
+
+      if (previewMode === "team-sheets") {
+        setTeamSheetPlayerImageStatusById((currentStatusById) => ({
+          ...currentStatusById,
+          ...Object.fromEntries(selectedTeamSheetPlayerIds.map((playerId) => [playerId, "found"])),
+        }));
+      }
+
+      setSubmitStatus({
+        kind: "success",
+        message: "Page created successfully. Review the result and close the overlay when ready.",
+      });
     } catch (submitError) {
-      setError(submitError.message || "Failed to create page.");
+      const message = notifyRequestError(submitError.message, "Failed to create page.");
+      setError(message);
+
+      if (previewMode === "team-sheets" && selectedTeamSheetTeam) {
+        const failedPlayerName = getImageResolutionFailureName(message);
+        const failedPlayerIds = getTeamSheetPlayerIdsByName(selectedTeamSheetTeam, failedPlayerName);
+
+        if (failedPlayerIds.length) {
+          setTeamSheetPlayerImageStatusById((currentStatusById) => ({
+            ...currentStatusById,
+            ...Object.fromEntries(failedPlayerIds.map((playerId) => [playerId, "missing"])),
+          }));
+        }
+      }
+
+      setSubmitStatus({
+        kind: "error",
+        message,
+      });
     } finally {
       setSubmitting(false);
     }
@@ -2757,9 +3159,9 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
                       <button
                         type="button"
                         className="page-creation-overlay__field-action"
-                        onClick={() => setSelectedFieldPaths(teamStatPaths.slice(0, matchStatsSelectionLimit))}
+                        onClick={() => setSelectedFieldPaths(resolvedMatchStatsDefaults.selectedPaths)}
                       >
-                        Select all stats
+                        Select default stats
                       </button>
                       <button
                         type="button"
@@ -2770,6 +3172,31 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
                       </button>
                     </div>
                   </div>
+
+                  {statsPageOptions.length ? (
+                    <label className="page-creation-overlay__field-select">
+                      <span>Default stats page</span>
+                      <select
+                        value={selectedStatsPageKey}
+                        onChange={(event) => setSelectedStatsPageKey(event.target.value)}
+                      >
+                        {statsPageOptions.map((pageKey) => (
+                          <option key={pageKey} value={pageKey}>
+                            {humanizeLabel(pageKey)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : null}
+
+                  {loadingStatsPageDefaults ? (
+                    <p className="page-creation-overlay__helper-text">Loading default stats pages...</p>
+                  ) : null}
+                  {statsPageDefaultsError ? (
+                    <p className="page-creation-overlay__helper-text page-creation-overlay__helper-text--error">
+                      {statsPageDefaultsError}
+                    </p>
+                  ) : null}
 
                   <div className="page-creation-overlay__preview-block">
                     <div className="page-creation-overlay__panel-header">
@@ -2785,7 +3212,7 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
 
                     <div className="page-creation-overlay__stats-list-wrap">
                       <div className="page-creation-overlay__stats-list">
-                        {matchStatItems.map((item) => {
+                        {orderedMatchStatItems.map((item) => {
                           const isSelected = selectedFieldPathSet.has(item.path);
                           const hasReachedLimit = selectedFieldPaths.length >= matchStatsSelectionLimit;
                           const suffixValue = selectedMatchStatsSuffixByPath[item.path] ?? item.defaultSuffix;
@@ -2892,6 +3319,7 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
                             {(selectedTeamSheetTeam?.players || []).map((item) => {
                               const isSelected = selectedTeamSheetPlayerIds.includes(item.id);
                               const hasReachedLimit = selectedTeamSheetPlayerIds.length >= teamSheetPlayerLimit;
+                              const imageStatus = teamSheetPlayerImageStatusById[item.id] || "unknown";
 
                               return (
                                 <label
@@ -2915,7 +3343,20 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
                                   <span className="page-creation-overlay__team-sheet-item-body">
                                     <span className="page-creation-overlay__team-sheet-item-badge">{item.badge}</span>
                                     <span className="page-creation-overlay__team-sheet-item-copy">
-                                      <strong>{item.primary}</strong>
+                                      <strong>
+                                        <span>{item.primary}</span>
+                                        {imageStatus !== "unknown" ? (
+                                          <span
+                                            className={`page-creation-overlay__team-sheet-image-status page-creation-overlay__team-sheet-image-status--${imageStatus}`}
+                                            aria-label={
+                                              imageStatus === "found" ? "Player image found" : "Player image not found"
+                                            }
+                                            title={
+                                              imageStatus === "found" ? "Player image found" : "Player image not found"
+                                            }
+                                          />
+                                        ) : null}
+                                      </strong>
                                       <small>{item.secondary || selectedTeamSheetTeam?.label}</small>
                                     </span>
                                   </span>
@@ -3093,6 +3534,13 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
         ) : null}
 
         <div className="page-creation-overlay__actions">
+          {submitStatus ? (
+            <p
+              className={`page-creation-overlay__submit-status page-creation-overlay__submit-status--${submitStatus.kind}`}
+            >
+              {submitStatus.message}
+            </p>
+          ) : null}
           <button type="button" className="source-button" onClick={onClose}>
             Cancel
           </button>

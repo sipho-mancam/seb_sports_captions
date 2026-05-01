@@ -18,6 +18,12 @@ function getPrompt(statsType) {
   }
 }
 
+function notifyRequestError(message, fallbackMessage) {
+  const resolvedMessage = message || fallbackMessage;
+  window.alert(resolvedMessage);
+  return resolvedMessage;
+}
+
 export default function StatsPage() {
   const navigate = useNavigate();
   const { state, setStatsSelection, setSelectedMatchId } = useAppFlow();
@@ -61,8 +67,9 @@ export default function StatsPage() {
         }
       } catch (error) {
         if (mounted) {
+          const message = notifyRequestError(error.message, "Failed to load matches.");
           setMatches([]);
-          setMatchError(error.message || "Failed to load matches.");
+          setMatchError(message);
         }
       } finally {
         if (mounted) {

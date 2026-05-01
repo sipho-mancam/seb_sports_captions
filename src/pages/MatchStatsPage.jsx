@@ -4,6 +4,12 @@ import '../styles/MatchStatsPage.css';
 
 const BASE_URL = 'http://localhost:8080';
 
+function notifyRequestError(message, fallbackMessage) {
+  const resolvedMessage = message || fallbackMessage;
+  window.alert(resolvedMessage);
+  return resolvedMessage;
+}
+
 function normalizeMatchStatsPayload(payload) {
   if (payload?.match) {
     return payload.match;
@@ -105,7 +111,8 @@ const MatchStatsPage = () => {
       setError(null);
     } catch (err) {
       console.error('Error fetching match stats:', err);
-      setError(err.message || 'Failed to load match statistics');
+      const message = notifyRequestError(err.message, 'Failed to load match statistics');
+      setError(message);
     } finally {
       setLoading(false);
     }

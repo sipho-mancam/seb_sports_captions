@@ -3,6 +3,12 @@ import { useAppFlow } from "../context/AppFlowContext";
 import PageCreationOverlay from "./PageCreationOverlay";
 import { getRugbyVizDataTypes } from "../services/graphicsService";
 
+function notifyRequestError(message, fallbackMessage) {
+  const resolvedMessage = message || fallbackMessage;
+  window.alert(resolvedMessage);
+  return resolvedMessage;
+}
+
 export default function MatchDataTypePanel() {
   const { state, setDataType, addCreatedPage } = useAppFlow();
   const [dataTypes, setDataTypes] = useState([]);
@@ -27,7 +33,8 @@ export default function MatchDataTypePanel() {
       } catch (loadError) {
         if (mounted) {
           setDataTypes([]);
-          setError(loadError.message || "Failed to load data types.");
+          const message = notifyRequestError(loadError.message, "Failed to load data types.");
+          setError(message);
         }
       } finally {
         if (mounted) {
@@ -159,8 +166,6 @@ export default function MatchDataTypePanel() {
         fieldValues: pageResult.fieldValues || fieldValues,
       });
     });
-
-    setIsOverlayOpen(false);
   };
 
   return (
