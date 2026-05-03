@@ -1,4 +1,4 @@
-import { NavLink } from "react-router-dom";
+import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { useAppFlow } from "../context/AppFlowContext";
 
 const steps = [
@@ -10,9 +10,25 @@ const steps = [
 ];
 
 export default function ProgressHeader() {
+  const navigate = useNavigate();
+  const location = useLocation();
   const {
     state: { selectedSport, selectedSource, selectedTournament, selectedStatsType },
   } = useAppFlow();
+  const isRootRoute = location.pathname === "/";
+
+  const handleBack = () => {
+    if (isRootRoute) {
+      return;
+    }
+
+    if (location.key === "default") {
+      navigate("/");
+      return;
+    }
+
+    navigate(-1);
+  };
 
   const canOpen = {
     "/": true,
@@ -26,7 +42,20 @@ export default function ProgressHeader() {
 
   return (
     <header className="progress-header">
-      <h1>Sports Graphics Control Room</h1>
+      <div className="progress-header__top">
+        <button
+          type="button"
+          className="progress-header__back"
+          onClick={handleBack}
+          disabled={isRootRoute}
+          aria-label="Go back"
+        >
+          <span aria-hidden="true" className="progress-header__back-icon">
+            ←
+          </span>
+        </button>
+        <h1>Sports Graphics Control Room</h1>
+      </div>
       <nav>
         {steps.map((step) => (
           <NavLink

@@ -150,9 +150,20 @@ function humanizeLabel(value) {
     .replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
+function formatSelectableStatLabel(label) {
+  return String(label || "")
+}
+
+function formatMatchStatsFieldLabel(label) {
+  return String(label || "")
+    .replace(/^percentage\b\s*/i, "% ")
+    .replace(/^percent\b\s*/i, "\\% ")
+    .replace(/\bpercent\b/gi, "\\%");
+}
+
 function formatStatDescription(path) {
   const segments = String(path || "").split(".").filter(Boolean);
-  return humanizeLabel(segments[segments.length - 1] || path || "");
+  return formatSelectableStatLabel(humanizeLabel(segments[segments.length - 1] || path || ""));
 }
 
 function formatListItemValue(value) {
@@ -160,7 +171,7 @@ function formatListItemValue(value) {
     return "-";
   }
 
-  return String(value);
+  return String(value).trim().replace(/%$/u, "").trim();
 }
 
 function collectTeamStatPaths(homeStats, awayStats, parentPath = "", paths = new Set()) {
@@ -205,7 +216,7 @@ function isMatchStatsPayload(selectedData) {
 }
 
 function getDefaultMatchStatSuffix(path) {
-  return String(path || "").toLowerCase().includes("percent") ? "%" : "";
+  return "";
 }
 
 function formatMatchStatValue(value) {
@@ -213,7 +224,7 @@ function formatMatchStatValue(value) {
     return "0";
   }
 
-  const normalizedString = String(value).trim();
+  const normalizedString = String(value).trim().replace(/%$/u, "").trim();
   if (!normalizedString || normalizedString === "-") {
     return "0";
   }
@@ -284,10 +295,70 @@ function normalizeStatLabel(value) {
     .toLowerCase();
 }
 
-function resolveMatchStatDefaultsForPage(matchStatItems, statsPageDefaults, selectedStatsPageKey, selectionLimit) {
-  const defaultDescriptions = Array.isArray(statsPageDefaults?.[selectedStatsPageKey])
-    ? statsPageDefaults[selectedStatsPageKey]
-    : [];
+function getStatSearchScore(label, normalizedQuery) {
+  if (!normalizedQuery) {
+    return 0;
+  }
+
+  const normalizedLabel = normalizeStatLabel(label);
+  if (!normalizedLabel) {
+    return null;
+  }
+
+  if (normalizedLabel === normalizedQuery) {
+    return 0;
+  }
+
+  if (normalizedLabel.startsWith(normalizedQuery)) {
+    return 1;
+  }
+
+  if (normalizedLabel.split(" ").some((word) => word.startsWith(normalizedQuery))) {
+    return 2;
+  }
+
+  if (normalizedLabel.includes(normalizedQuery)) {
+    return 3;
+  }
+
+  return null;
+}
+
+function getRankedStatItemsByQuery(items, query) {
+  const normalizedQuery = normalizeStatLabel(query);
+  if (!normalizedQuery) {
+    return items;
+  }
+
+  return items
+    .map((item, index) => ({
+      index,
+      item,
+      score: getStatSearchScore(item.label, normalizedQuery),
+    }))
+    .filter((entry) => entry.score !== null)
+    .sort((left, right) => left.score - right.score || left.index - right.index)
+    .map((entry) => entry.item);
+}
+
+function getAllStatsPageDefaultDescriptions(statsPageDefaults) {
+  return Object.values(statsPageDefaults || {}).flatMap((pageDefaults) =>
+    Array.isArray(pageDefaults) ? pageDefaults : []
+  );
+}
+
+function resolveMatchStatDefaultsForPage(
+  matchStatItems,
+  statsPageDefaults,
+  selectedStatsPageKey,
+  selectionLimit,
+  options = {}
+) {
+  const defaultDescriptions = options.useAllPages
+    ? getAllStatsPageDefaultDescriptions(statsPageDefaults)
+    : Array.isArray(statsPageDefaults?.[selectedStatsPageKey])
+      ? statsPageDefaults[selectedStatsPageKey]
+      : [];
 
   if (!defaultDescriptions.length) {
     return {
@@ -542,8 +613,15 @@ function getPageStateValue(selectedData) {
 }
 
 function getMatchStatsSelectionLimit(manifest) {
-  const fieldRows = manifest?.statistics_list?.fields || manifest?.stats_list?.fields;
+  const fieldRows =
+    manifest?.statistics_list?.fields ||
+    manifest?.stats_list?.fields ||
+    manifest?.match_stats_list?.fields;
   return Array.isArray(fieldRows) && fieldRows.length ? fieldRows.length : 5;
+}
+
+function isMatchStatsScene4012Manifest(manifest) {
+  return Number(manifest?.metadata?.scene) === 4012;
 }
 
 function getMatchStatsSectionItemKeys(section, fallbackKeys = []) {
@@ -572,6 +650,7 @@ function appendMatchStatSuffix(value, suffix) {
 
 function buildManifestLikeMatchStatsData(selectedData, selectedStatPaths, options = {}) {
   const manifest = options.manifest;
+  const scene = Number(manifest?.metadata?.scene);
   const selectionLimit = getMatchStatsSelectionLimit(manifest);
   const suffixByPath = options.suffixByPath || {};
   const selectedItems = getMatchStatSelectableItems(selectedData, selectedStatPaths).slice(0, selectionLimit);
@@ -595,6 +674,41 @@ function buildManifestLikeMatchStatsData(selectedData, selectedStatPaths, option
   ]);
   const teamLogoKeys = getMatchStatsSectionItemKeys(manifest?.team_logos, manifest ? [] : ["home_logo", "away_logo"]);
   const pageStateKeys = getMatchStatsSectionItemKeys(manifest?.page_state, ["value"]);
+
+  if (scene === 4012) {
+    const matchInfoKeys = getMatchStatsSectionItemKeys(manifest?.match_info, ["match_info"]);
+    const matchStatsListKeys = getMatchStatsSectionItemKeys(manifest?.match_stats_list, ["match_stats"]);
+    const matchInfoValue = `Match Stats: ${getTeamBadgeValue(homeTeam)} ${getTeamScoreValue(
+      selectedData?.homeTeam
+    )} - ${getTeamScoreValue(selectedData?.awayTeam)} ${getTeamBadgeValue(awayTeam)}`.trim();
+
+    return {
+      competition: selectedData?.competition ?? null,
+      season: selectedData?.season ?? null,
+      venue: selectedData?.venue ?? null,
+      match_info: {
+        data: matchInfoKeys.reduce((result, itemKey) => {
+          result[itemKey] = matchInfoValue;
+          return result;
+        }, {}),
+        item: matchInfoKeys,
+      },
+      match_stats_list: {
+        data: selectedItems.map((item) => {
+          const suffix = suffixByPath[item.path] ?? item.defaultSuffix;
+          const statValue = `${appendMatchStatSuffix(item.homeValue, suffix)} ${formatMatchStatsFieldLabel(
+            item.label
+          )} ${appendMatchStatSuffix(item.awayValue, suffix)}`.trim();
+
+          return matchStatsListKeys.reduce((result, itemKey) => {
+            result[itemKey] = statValue;
+            return result;
+          }, {});
+        }),
+        list_item: matchStatsListKeys,
+      },
+    };
+  }
 
   return {
     competition: selectedData?.competition ?? null,
@@ -636,7 +750,7 @@ function buildManifestLikeMatchStatsData(selectedData, selectedStatPaths, option
           const valueMap = {
             away_suffix: "",
             away_value: appendMatchStatSuffix(item.awayValue, suffix),
-            description: item.label,
+            description: formatMatchStatsFieldLabel(item.label),
             home_suffix: "",
             home_value: appendMatchStatSuffix(item.homeValue, suffix),
           };
@@ -1851,6 +1965,8 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
   const [loadingStatsPageDefaults, setLoadingStatsPageDefaults] = useState(false);
   const [statsPageDefaultsError, setStatsPageDefaultsError] = useState("");
   const [selectedStatsPageKey, setSelectedStatsPageKey] = useState("");
+  const [matchStatsSearchTerm, setMatchStatsSearchTerm] = useState("");
+  const [playerStatsSearchTerm, setPlayerStatsSearchTerm] = useState("");
 
   const requiresStatSelection = useMemo(
     () =>
@@ -2051,9 +2167,12 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
         matchStatItems,
         statsPageDefaults,
         selectedStatsPageKey,
-        matchStatsSelectionLimit
+        matchStatsSelectionLimit,
+        {
+          useAllPages: isMatchStatsScene4012Manifest(selectedManifest || preparedTemplate?.mapping),
+        }
       ),
-    [matchStatItems, matchStatsSelectionLimit, selectedStatsPageKey, statsPageDefaults]
+    [matchStatItems, matchStatsSelectionLimit, preparedTemplate?.mapping, selectedManifest, selectedStatsPageKey, statsPageDefaults]
   );
 
   const resolvedPlayerStatsDefaults = useMemo(
@@ -2075,6 +2194,16 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
   const orderedPlayerStatItems = useMemo(
     () => resolvedPlayerStatsDefaults.orderedItems,
     [resolvedPlayerStatsDefaults]
+  );
+
+  const visibleMatchStatItems = useMemo(
+    () => getRankedStatItemsByQuery(orderedMatchStatItems, matchStatsSearchTerm),
+    [matchStatsSearchTerm, orderedMatchStatItems]
+  );
+
+  const visiblePlayerStatItems = useMemo(
+    () => getRankedStatItemsByQuery(orderedPlayerStatItems, playerStatsSearchTerm),
+    [orderedPlayerStatItems, playerStatsSearchTerm]
   );
 
   const previewMode = useMemo(() => {
@@ -3011,7 +3140,7 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
   }
 
   return createPortal(
-    <div className="modal-overlay page-creation-overlay" onClick={onClose}>
+    <div className="modal-overlay page-creation-overlay">
       <div className="modal-card page-creation-overlay__card" onClick={(event) => event.stopPropagation()}>
         <div className="modal-header page-creation-overlay__header">
           <div>
@@ -3478,6 +3607,17 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
                     </p>
                   ) : null}
 
+                  <label className="page-creation-overlay__field-select">
+                    <span>Search stats</span>
+                    <input
+                      type="search"
+                      className="search-input"
+                      value={matchStatsSearchTerm}
+                      onChange={(event) => setMatchStatsSearchTerm(event.target.value)}
+                      placeholder="Search by stat description"
+                    />
+                  </label>
+
                   <div className="page-creation-overlay__preview-block">
                     <div className="page-creation-overlay__panel-header">
                       <h4>Team Stats List</h4>
@@ -3492,7 +3632,7 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
 
                     <div className="page-creation-overlay__stats-list-wrap">
                       <div className="page-creation-overlay__stats-list">
-                        {orderedMatchStatItems.map((item) => {
+                        {visibleMatchStatItems.map((item) => {
                           const isSelected = selectedFieldPathSet.has(item.path);
                           const hasReachedLimit = selectedFieldPaths.length >= matchStatsSelectionLimit;
                           const suffixValue = selectedMatchStatsSuffixByPath[item.path] ?? item.defaultSuffix;
@@ -3548,6 +3688,11 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
                             </label>
                           );
                         })}
+                        {!visibleMatchStatItems.length ? (
+                          <p className="page-creation-overlay__helper-text">
+                            No stats matched that description.
+                          </p>
+                        ) : null}
                       </div>
                     </div>
                   </div>
@@ -3632,6 +3777,17 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
                     </p>
                   ) : null}
 
+                  <label className="page-creation-overlay__field-select">
+                    <span>Search stats</span>
+                    <input
+                      type="search"
+                      className="search-input"
+                      value={playerStatsSearchTerm}
+                      onChange={(event) => setPlayerStatsSearchTerm(event.target.value)}
+                      placeholder="Search by stat description"
+                    />
+                  </label>
+
                   <div className="page-creation-overlay__preview-block">
                     <div className="page-creation-overlay__panel-header">
                       <h4>Player Stats List</h4>
@@ -3640,7 +3796,7 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
 
                     <div className="page-creation-overlay__stats-list-wrap">
                       <div className="page-creation-overlay__stats-list">
-                        {orderedPlayerStatItems.map((item) => {
+                        {visiblePlayerStatItems.map((item) => {
                           const isSelected = selectedFieldPathSet.has(item.path);
                           const hasReachedLimit = selectedFieldPaths.length >= matchStatsSelectionLimit;
                           const suffixValue = selectedMatchStatsSuffixByPath[item.path] ?? item.defaultSuffix;
@@ -3692,6 +3848,11 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
                             </label>
                           );
                         })}
+                        {!visiblePlayerStatItems.length ? (
+                          <p className="page-creation-overlay__helper-text">
+                            No stats matched that description.
+                          </p>
+                        ) : null}
                       </div>
                     </div>
                   </div>

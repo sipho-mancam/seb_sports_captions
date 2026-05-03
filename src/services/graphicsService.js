@@ -17,7 +17,8 @@ const tournamentData = {
   },
 };
 
-const BASE_URL = "http://localhost:8080";
+const DEFAULT_API_BASE_URL = "http://localhost:8080";
+const BASE_URL = (import.meta.env.VITE_API_BASE_URL || DEFAULT_API_BASE_URL).replace(/\/$/, "");
 
 async function resolveResponseErrorMessage(response, fallbackMessage) {
   try {
@@ -505,6 +506,15 @@ function decodeHtmlEntities(value) {
 
 function normalizeFieldStringValue(value) {
   const decodedValue = decodeHtmlEntities(String(value));
+  const normalizedLabelValue = {
+    "Post Match": "Full Time",
+    "First Half": "Half Time",
+    "Second Half": "Full Time",
+  }[decodedValue.trim()];
+
+  if (normalizedLabelValue) {
+    return normalizedLabelValue;
+  }
 
   if (decodedValue.trim() === "-") {
     return "-";
@@ -984,6 +994,37 @@ export async function fetchRugbyMatchesByDate(fromDate, competitionId, seasonId)
     });
 }
 
+function normalizeMatchStatsPayload(payload) {
+  if (payload?.match) {
+    return payload.match;
+  }
+
+  if (payload?.data) {
+    return payload.data;
+  }
+
+  return payload;
+}
+
+export async function fetchRugbyMatchStats(matchId, options = {}) {
+  if (!matchId) {
+    throw new Error("A match ID is required to load match statistics.");
+  }
+
+  const apiUrl = new URL(`${BASE_URL}/api/v1/sportscaption/matches/rugbyviz/stats`);
+  apiUrl.searchParams.set("matchId", matchId);
+
+  const response = await fetch(apiUrl, {
+    signal: options.signal,
+  });
+
+  if (!response.ok) {
+    await throwRequestError(response, `Failed to load match statistics (${response.status})`);
+  }
+
+  return normalizeMatchStatsPayload(await response.json());
+}
+
 function buildGraphics(statsType, filterValue) {
   const cleanFilter = filterValue?.trim() || "General";
   return [
@@ -1065,7 +1106,7 @@ export async function fetchGraphicsData({ sport, source, tournament, statsType, 
 }
 
 export async function sendToMseServer(payload, mseUrlOverride) {
-  const mseEndpoint = mseUrlOverride || import.meta.env.VITE_MSE_SERVER_URL || "http://localhost:8080/mse/graphics";
+  const mseEndpoint = mseUrlOverride || import.meta.env.VITE_MSE_SERVER_URL || `${BASE_URL}/mse/graphics`;
 
   try {
     const response = await fetch(mseEndpoint, {

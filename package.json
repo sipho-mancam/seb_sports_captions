@@ -1,12 +1,20 @@
 {
   "name": "sports-captions",
   "private": true,
+  "main": "electron/main.js",
+  "productName": "Sports Captions",
   "version": "1.0.0",
+  "description": "Desktop tooling for Sports Captions graphics workflows.",
+  "author": "Seb4vsion",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "preview:dist": "vite preview --host 0.0.0.0",
+    "desktop:start": "npm run build && electron .",
+    "desktop:pack": "npm run build && electron-builder --dir",
+    "desktop:dist": "npm run build && electron-builder"
   },
   "dependencies": {
     "react": "^18.3.1",
@@ -15,6 +23,30 @@
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.2",
+    "electron": "^35.1.5",
+    "electron-builder": "^24.13.3",
     "vite": "^5.4.8"
+  },
+  "build": {
+    "appId": "com.seb4vision.sportscaptions",
+    "productName": "Sports Captions",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "win": {
+      "signAndEditExecutable": false,
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
   }
 }

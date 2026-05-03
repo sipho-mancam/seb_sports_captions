@@ -1,25 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import { fetchRugbyMatchStats } from '../services/graphicsService';
 import '../styles/MatchStatsPage.css';
 
-const BASE_URL = 'http://localhost:8080';
+const MATCH_STATS_REFRESH_INTERVAL_MS = 1000;
 
 function notifyRequestError(message, fallbackMessage) {
   const resolvedMessage = message || fallbackMessage;
   window.alert(resolvedMessage);
   return resolvedMessage;
-}
-
-function normalizeMatchStatsPayload(payload) {
-  if (payload?.match) {
-    return payload.match;
-  }
-
-  if (payload?.data) {
-    return payload.data;
-  }
-
-  return payload;
 }
 
 function getTeam(teamData, fallbackName) {
@@ -91,32 +80,70 @@ const MatchStatsPage = () => {
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    fetchMatchStats();
-  }, [matchId]);
+    let isMounted = true;
+    let hasLoadedOnce = false;
+    let isFetching = false;
+    let activeController = null;
 
-  const fetchMatchStats = async () => {
-    try {
-      setLoading(true);
-      const apiUrl = new URL(`${BASE_URL}/api/v1/sportscaption/matches/rugbyviz/stats`);
-      apiUrl.searchParams.set('matchId', matchId);
-
-      const response = await fetch(apiUrl);
-      
-      if (!response.ok) {
-        throw new Error(`API error: ${response.status}`);
+    const loadMatchStats = async ({ showLoader = false } = {}) => {
+      if (isFetching) {
+        return;
       }
 
-      const data = await response.json();
-      setMatchStats(normalizeMatchStatsPayload(data));
-      setError(null);
-    } catch (err) {
-      console.error('Error fetching match stats:', err);
-      const message = notifyRequestError(err.message, 'Failed to load match statistics');
-      setError(message);
-    } finally {
-      setLoading(false);
-    }
-  };
+      isFetching = true;
+      const controller = new AbortController();
+      activeController = controller;
+
+      if (showLoader) {
+        setLoading(true);
+        setError(null);
+      }
+
+      try {
+        const data = await fetchRugbyMatchStats(matchId, { signal: controller.signal });
+
+        if (!isMounted || activeController !== controller) {
+          return;
+        }
+
+        hasLoadedOnce = true;
+        setMatchStats(data);
+        setError(null);
+      } catch (err) {
+        if (err.name === 'AbortError' || !isMounted) {
+          return;
+        }
+
+        console.error('Error fetching match stats:', err);
+
+        if (!hasLoadedOnce) {
+          const message = notifyRequestError(err.message, 'Failed to load match statistics');
+          setError(message);
+        }
+      } finally {
+        if (activeController === controller) {
+          activeController = null;
+        }
+
+        isFetching = false;
+
+        if (showLoader && isMounted) {
+          setLoading(false);
+        }
+      }
+    };
+
+    void loadMatchStats({ showLoader: true });
+    const intervalId = window.setInterval(() => {
+      void loadMatchStats();
+    }, MATCH_STATS_REFRESH_INTERVAL_MS);
+
+    return () => {
+      isMounted = false;
+      window.clearInterval(intervalId);
+      activeController?.abort();
+    };
+  }, [matchId]);
 
   if (loading) {
     return <div className="match-stats-page loading">Loading match statistics...</div>;
