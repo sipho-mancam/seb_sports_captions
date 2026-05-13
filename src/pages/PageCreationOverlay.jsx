@@ -166,6 +166,42 @@ function formatStatDescription(path) {
   return formatSelectableStatLabel(humanizeLabel(segments[segments.length - 1] || path || ""));
 }
 
+function formatHeadToHeadSegmentLabel(segment, selectedData) {
+  const homeTeamName = selectedData?.teams?.homeTeam?.name || "Home Team";
+  const awayTeamName = selectedData?.teams?.awayTeam?.name || "Away Team";
+
+  const mappedLabels = {
+    homeTeam: homeTeamName,
+    awayTeam: awayTeamName,
+    homeTeamWins: `${homeTeamName} Wins`,
+    awayTeamWins: `${awayTeamName} Wins`,
+    homeTeamWinPercentage: `${homeTeamName} Win Percentage`,
+    awayTeamWinPercentage: `${awayTeamName} Win Percentage`,
+  };
+
+  return mappedLabels[segment] || humanizeLabel(segment);
+}
+
+function formatHeadToHeadSummaryLabel(path, selectedData) {
+  const segments = String(path || "").split(".").filter(Boolean);
+
+  if (!segments.length) {
+    return "";
+  }
+
+  if (segments.length === 1) {
+    return formatSelectableStatLabel(formatHeadToHeadSegmentLabel(segments[0], selectedData));
+  }
+
+  const parentLabel = segments
+    .slice(0, -1)
+    .map((segment) => formatHeadToHeadSegmentLabel(segment, selectedData))
+    .join(" ");
+  const statLabel = formatHeadToHeadSegmentLabel(segments[segments.length - 1], selectedData);
+
+  return formatSelectableStatLabel(`${parentLabel}: ${statLabel}`);
+}
+
 function formatListItemValue(value) {
   if (value === null || value === undefined || value === "") {
     return "-";
@@ -562,6 +598,8 @@ function buildImageManifestPayload(token, options = {}) {
   const secondaryToken = segments[1] || "";
   const homeTeamName = options.homeTeamName || "";
   const awayTeamName = options.awayTeamName || "";
+  const homeCaptainName = options.homeCaptainName || "";
+  const awayCaptainName = options.awayCaptainName || "";
   const teamName = options.teamName || "";
   const playerName = options.playerName || "";
 
@@ -583,8 +621,20 @@ function buildImageManifestPayload(token, options = {}) {
     return "";
   }
 
+  if (primaryToken === "home_captain_photo" && homeCaptainName) {
+    return `#img:${homeTeamName || resolvedTeamName}:player:${homeCaptainName}`;
+  }
+
+  if (primaryToken === "away_captain_photo" && awayCaptainName) {
+    return `#img:${awayTeamName || resolvedTeamName}:player:${awayCaptainName}`;
+  }
+
   if (primaryToken.endsWith("_logo")) {
     return `#img:${resolvedTeamName}`;
+  }
+
+  if (["coach_photo", "player_photo", "player_image"].includes(primaryToken) && playerName) {
+    return `#img:${resolvedTeamName}:player:${playerName}`;
   }
 
   if (secondaryToken === "player" && playerName) {
@@ -612,12 +662,112 @@ function getPageStateValue(selectedData) {
   return selectedData?.matchStatus || selectedData?.period || "";
 }
 
+function normalizeManifestKey(key) {
+  return String(key || "")
+    .trim()
+    .toLowerCase()
+    .replace(/^#img:/, "")
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function getManifestConfiguredItemKeys(config) {
+  if (Array.isArray(config?.list_item) && config.list_item.length) {
+    return config.list_item;
+  }
+
+  if (Array.isArray(config?.item) && config.item.length) {
+    return config.item;
+  }
+
+  if (typeof config?.item === "string" && config.item.trim()) {
+    return [config.item.trim()];
+  }
+
+  return [];
+}
+
+function getManifestConfiguredSections(manifest) {
+  if (!isRecord(manifest)) {
+    return [];
+  }
+
+  return Object.entries(manifest)
+    .filter(([key, config]) => key !== "metadata" && isRecord(config))
+    .map(([key, config]) => {
+      const itemKeys = getManifestConfiguredItemKeys(config);
+      const fieldRows = Array.isArray(config.fields) ? config.fields : [];
+      const isList = Array.isArray(config.list_item) || (fieldRows.length > 0 && Array.isArray(fieldRows[0]));
+
+      return {
+        config,
+        fieldRows,
+        isList,
+        itemKeys,
+        key,
+        normalizedKey: normalizeManifestKey(key),
+      };
+    })
+    .filter((section) => section.itemKeys.length);
+}
+
+function findTeamCaptainPlayer(players) {
+  return (
+    (Array.isArray(players) ? players : []).find((player) => String(player?.captain || "").toLowerCase() === "true") ||
+    findTeamPlayerByShirtNumber(players, 1) ||
+    null
+  );
+}
+
+function findTeamPlayerByShirtNumber(players, shirtNumber) {
+  return (Array.isArray(players) ? players : []).find(
+    (player) => Number(getPlayerShirtNumber(player)) === Number(shirtNumber)
+  ) || null;
+}
+
+function buildMatchStatsCaptainPhotoData(selectedData, itemKeys) {
+  const homeTeam = selectedData?.homeTeam?.team || {};
+  const awayTeam = selectedData?.awayTeam?.team || {};
+  const homePlayer = findTeamCaptainPlayer(selectedData?.homeTeam?.players);
+  const awayPlayer = findTeamCaptainPlayer(selectedData?.awayTeam?.players);
+
+  return itemKeys.reduce((result, itemKey) => {
+    const normalizedKey = String(itemKey || "").trim().toLowerCase();
+    const valueMap = {
+      "#img:away_team:player_1": awayPlayer
+        ? buildImageManifestPayload("#img:away_team:player", {
+            awayTeamName: getTeamImageNameValue(awayTeam),
+            playerName: getPlayerDisplayName(awayPlayer),
+          })
+        : "",
+      "#img:home_team:player_1": homePlayer
+        ? buildImageManifestPayload("#img:home_team:player", {
+            homeTeamName: getTeamImageNameValue(homeTeam),
+            playerName: getPlayerDisplayName(homePlayer),
+          })
+        : "",
+    };
+
+    result[itemKey] = valueMap[normalizedKey] || "";
+    return result;
+  }, {});
+}
+
 function getMatchStatsSelectionLimit(manifest) {
-  const fieldRows =
-    manifest?.statistics_list?.fields ||
-    manifest?.stats_list?.fields ||
-    manifest?.match_stats_list?.fields;
-  return Array.isArray(fieldRows) && fieldRows.length ? fieldRows.length : 5;
+  const statisticsSection = getManifestConfiguredSections(manifest).find((section) => {
+    if (!section.isList) {
+      return false;
+    }
+
+    const normalizedItemKeys = section.itemKeys.map(normalizeManifestKey);
+    return (
+      normalizedItemKeys.some((itemKey) =>
+        ["home_value", "away_value", "description", "stat_label", "match_stats"].includes(itemKey)
+      ) || section.normalizedKey.includes("stat")
+    );
+  });
+
+  return statisticsSection?.fieldRows?.length || 5;
 }
 
 function isMatchStatsScene4012Manifest(manifest) {
@@ -636,6 +786,127 @@ function getMatchStatsSectionItemKeys(section, fallbackKeys = []) {
   return fallbackKeys;
 }
 
+function buildCombinedMatchStatValue(selectedData, item, suffix) {
+  const homeTeam = selectedData?.homeTeam?.team || {};
+  const awayTeam = selectedData?.awayTeam?.team || {};
+
+  return `${getTeamBadgeValue(homeTeam)} ${appendMatchStatSuffix(item.homeValue, suffix)} (${formatMatchStatsFieldLabel(
+    item.label
+  )}) ${appendMatchStatSuffix(item.awayValue, suffix)} ${getTeamBadgeValue(awayTeam)}`
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function buildMatchScoreValue(selectedData) {
+  return `${getTeamScoreValue(selectedData?.homeTeam)} - ${getTeamScoreValue(selectedData?.awayTeam)}`.trim();
+}
+
+function resolveMatchStatsSectionItemValue(itemKey, selectedData) {
+  const homeTeam = selectedData?.homeTeam?.team || {};
+  const awayTeam = selectedData?.awayTeam?.team || {};
+  const homeCaptain = findTeamCaptainPlayer(selectedData?.homeTeam?.players);
+  const awayCaptain = findTeamCaptainPlayer(selectedData?.awayTeam?.players);
+  const normalizedKey = normalizeManifestKey(itemKey);
+  const imageValue = buildImageManifestPayload(itemKey, {
+    awayCaptainName: awayCaptain ? getPlayerDisplayName(awayCaptain) : "",
+    awayTeamName: getTeamImageNameValue(awayTeam),
+    homeCaptainName: homeCaptain ? getPlayerDisplayName(homeCaptain) : "",
+    homeTeamName: getTeamImageNameValue(homeTeam),
+  });
+
+  if (imageValue) {
+    return imageValue;
+  }
+
+  if (normalizedKey.includes("competition")) {
+    return selectedData?.competition?.name || "";
+  }
+
+  if (normalizedKey.includes("season")) {
+    return selectedData?.season?.name || "";
+  }
+
+  if (normalizedKey.includes("venue")) {
+    return selectedData?.venue?.name || "";
+  }
+
+  if (normalizedKey.includes("period") || normalizedKey.includes("phase")) {
+    return getPeriodLabelValue(selectedData);
+  }
+
+  if (normalizedKey === "title" || normalizedKey.includes("title")) {
+    return "Match Stats";
+  }
+
+  if (normalizedKey.includes("page_state") || normalizedKey === "value") {
+    return getPageStateValue(selectedData);
+  }
+
+  if (normalizedKey.includes("match_info")) {
+    return `Match Stats: ${getTeamBadgeValue(homeTeam)} ${buildMatchScoreValue(selectedData)} ${getTeamBadgeValue(awayTeam)}`.trim();
+  }
+
+  if (normalizedKey.includes("home") && normalizedKey.includes("team") && normalizedKey.includes("name")) {
+    return getTeamNameValue(homeTeam);
+  }
+
+  if (normalizedKey.includes("away") && normalizedKey.includes("team") && normalizedKey.includes("name")) {
+    return getTeamNameValue(awayTeam);
+  }
+
+  if (normalizedKey.includes("score") && !normalizedKey.includes("home") && !normalizedKey.includes("away")) {
+    return buildMatchScoreValue(selectedData);
+  }
+
+  if (normalizedKey.includes("home") && (normalizedKey.includes("score") || normalizedKey.includes("value"))) {
+    return getTeamScoreValue(selectedData?.homeTeam);
+  }
+
+  if (normalizedKey.includes("away") && (normalizedKey.includes("score") || normalizedKey.includes("value"))) {
+    return getTeamScoreValue(selectedData?.awayTeam);
+  }
+
+  if (normalizedKey.includes("home") && (normalizedKey.includes("badge") || normalizedKey.includes("abbr"))) {
+    return getTeamBadgeValue(homeTeam);
+  }
+
+  if (normalizedKey.includes("away") && (normalizedKey.includes("badge") || normalizedKey.includes("abbr"))) {
+    return getTeamBadgeValue(awayTeam);
+  }
+
+  return "";
+}
+
+function resolveMatchStatsStatisticValue(itemKey, selectedData, item, suffix) {
+  const normalizedKey = normalizeManifestKey(itemKey);
+
+  if (normalizedKey.includes("home") && normalizedKey.includes("suffix")) {
+    return suffix || "";
+  }
+
+  if (normalizedKey.includes("away") && normalizedKey.includes("suffix")) {
+    return suffix || "";
+  }
+
+  if (normalizedKey.includes("home") && normalizedKey.includes("value")) {
+    return appendMatchStatSuffix(item.homeValue, suffix);
+  }
+
+  if (normalizedKey.includes("away") && normalizedKey.includes("value")) {
+    return appendMatchStatSuffix(item.awayValue, suffix);
+  }
+
+  if (normalizedKey.includes("description") || normalizedKey.includes("label")) {
+    return formatMatchStatsFieldLabel(item.label);
+  }
+
+  if (normalizedKey.includes("match_stats") || normalizedKey === "stat_value") {
+    return buildCombinedMatchStatValue(selectedData, item, suffix);
+  }
+
+  return "";
+}
+
 function appendMatchStatSuffix(value, suffix) {
   if (!suffix) {
     return value;
@@ -650,132 +921,45 @@ function appendMatchStatSuffix(value, suffix) {
 
 function buildManifestLikeMatchStatsData(selectedData, selectedStatPaths, options = {}) {
   const manifest = options.manifest;
-  const scene = Number(manifest?.metadata?.scene);
   const selectionLimit = getMatchStatsSelectionLimit(manifest);
   const suffixByPath = options.suffixByPath || {};
   const selectedItems = getMatchStatSelectableItems(selectedData, selectedStatPaths).slice(0, selectionLimit);
-  const homeTeam = selectedData?.homeTeam?.team || {};
-  const awayTeam = selectedData?.awayTeam?.team || {};
-  const matchHeaderKeys = getMatchStatsSectionItemKeys(manifest?.match_header, [
-    "home_badge",
-    "home_team_name",
-    "home_score",
-    "away_badge",
-    "away_team_name",
-    "away_score",
-    "period_label",
-  ]);
-  const statisticsKeys = getMatchStatsSectionItemKeys(manifest?.statistics_list, [
-    "description",
-    "home_suffix",
-    "home_value",
-    "away_value",
-    "away_suffix",
-  ]);
-  const teamLogoKeys = getMatchStatsSectionItemKeys(manifest?.team_logos, manifest ? [] : ["home_logo", "away_logo"]);
-  const pageStateKeys = getMatchStatsSectionItemKeys(manifest?.page_state, ["value"]);
+  const sections = getManifestConfiguredSections(manifest);
 
-  if (scene === 4012) {
-    const matchInfoKeys = getMatchStatsSectionItemKeys(manifest?.match_info, ["match_info"]);
-    const matchStatsListKeys = getMatchStatsSectionItemKeys(manifest?.match_stats_list, ["match_stats"]);
-    const matchInfoValue = `Match Stats: ${getTeamBadgeValue(homeTeam)} ${getTeamScoreValue(
-      selectedData?.homeTeam
-    )} - ${getTeamScoreValue(selectedData?.awayTeam)} ${getTeamBadgeValue(awayTeam)}`.trim();
+  return sections.reduce(
+    (result, section) => {
+      if (section.isList) {
+        result[section.key] = {
+          data: selectedItems.slice(0, section.fieldRows.length || selectedItems.length).map((item) => {
+            const suffix = suffixByPath[item.path] ?? item.defaultSuffix;
 
-    return {
+            return section.itemKeys.reduce((row, itemKey) => {
+              row[itemKey] = resolveMatchStatsStatisticValue(itemKey, selectedData, item, suffix);
+              return row;
+            }, {});
+          }),
+          list_item: section.itemKeys,
+        };
+
+        return result;
+      }
+
+      result[section.key] = {
+        data: section.itemKeys.reduce((sectionData, itemKey) => {
+          sectionData[itemKey] = resolveMatchStatsSectionItemValue(itemKey, selectedData);
+          return sectionData;
+        }, {}),
+        item: section.itemKeys,
+      };
+
+      return result;
+    },
+    {
       competition: selectedData?.competition ?? null,
       season: selectedData?.season ?? null,
       venue: selectedData?.venue ?? null,
-      match_info: {
-        data: matchInfoKeys.reduce((result, itemKey) => {
-          result[itemKey] = matchInfoValue;
-          return result;
-        }, {}),
-        item: matchInfoKeys,
-      },
-      match_stats_list: {
-        data: selectedItems.map((item) => {
-          const suffix = suffixByPath[item.path] ?? item.defaultSuffix;
-          const statValue = `${appendMatchStatSuffix(item.homeValue, suffix)} ${formatMatchStatsFieldLabel(
-            item.label
-          )} ${appendMatchStatSuffix(item.awayValue, suffix)}`.trim();
-
-          return matchStatsListKeys.reduce((result, itemKey) => {
-            result[itemKey] = statValue;
-            return result;
-          }, {});
-        }),
-        list_item: matchStatsListKeys,
-      },
-    };
-  }
-
-  return {
-    competition: selectedData?.competition ?? null,
-    season: selectedData?.season ?? null,
-    venue: selectedData?.venue ?? null,
-    match_header: {
-      data: matchHeaderKeys.reduce((result, itemKey) => {
-        const valueMap = {
-          away_badge: getTeamBadgeValue(awayTeam),
-          away_score: getTeamScoreValue(selectedData?.awayTeam),
-          away_team_name: getTeamNameValue(awayTeam),
-          home_badge: getTeamBadgeValue(homeTeam),
-          home_score: getTeamScoreValue(selectedData?.homeTeam),
-          home_team_name: getTeamNameValue(homeTeam),
-          period_label: getPeriodLabelValue(selectedData),
-        };
-        result[itemKey] =
-          valueMap[itemKey] ??
-          buildImageManifestPayload(itemKey, {
-            awayTeamName: getTeamImageNameValue(awayTeam),
-            homeTeamName: getTeamImageNameValue(homeTeam),
-          }) ??
-          "";
-        return result;
-      }, {}),
-      item: matchHeaderKeys,
-    },
-    page_state: {
-      data: pageStateKeys.reduce((result, itemKey) => {
-        result[itemKey] = itemKey === "value" ? getPageStateValue(selectedData) : "";
-        return result;
-      }, {}),
-      item: pageStateKeys,
-    },
-    statistics_list: {
-      data: selectedItems.map((item) => {
-        const suffix = suffixByPath[item.path] ?? item.defaultSuffix;
-        return statisticsKeys.reduce((result, itemKey) => {
-          const valueMap = {
-            away_suffix: "",
-            away_value: appendMatchStatSuffix(item.awayValue, suffix),
-            description: formatMatchStatsFieldLabel(item.label),
-            home_suffix: "",
-            home_value: appendMatchStatSuffix(item.homeValue, suffix),
-          };
-          result[itemKey] = valueMap[itemKey] ?? "";
-          return result;
-        }, {});
-      }),
-      list_item: statisticsKeys,
-    },
-    ...(teamLogoKeys.length
-      ? {
-          team_logos: {
-            data: teamLogoKeys.reduce((result, itemKey) => {
-              result[itemKey] =
-                buildImageManifestPayload(itemKey, {
-                  awayTeamName: getTeamImageNameValue(awayTeam),
-                  homeTeamName: getTeamImageNameValue(homeTeam),
-                }) || "";
-              return result;
-            }, {}),
-            item: teamLogoKeys,
-          },
-        }
-      : {}),
-  };
+    }
+  );
 }
 
 function isTeamSheetsPayload(selectedData) {
@@ -840,7 +1024,7 @@ function buildHeadToHeadSummaryItems(selectedData) {
   return collectHeadToHeadSummaryPaths(headToHeadStats).map((path) => ({
     id: `summary:${path}`,
     path,
-    label: formatStatDescription(path),
+    label: formatHeadToHeadSummaryLabel(path, selectedData),
     value: formatListItemValue(getNestedValue(headToHeadStats, path)),
   }));
 }
@@ -1157,12 +1341,14 @@ function getTeamSheetSectionConfig(config, fallbackItemKeys = []) {
   if (!isRecord(config)) {
     return {
       fields: [],
+      key: "",
       itemKeys: fallbackItemKeys,
     };
   }
 
   return {
     fields: Array.isArray(config.list) ? config.list : Array.isArray(config.fields) ? config.fields : [],
+    key: "",
     itemKeys:
       Array.isArray(config.list_item)
         ? config.list_item
@@ -1176,14 +1362,99 @@ function getTeamSheetSectionConfig(config, fallbackItemKeys = []) {
 
 function getTeamSheetManifestSections(manifest) {
   const manifestConfig = isRecord(manifest) ? manifest : {};
+  const manifestSections = getManifestConfiguredSections(manifestConfig);
+  const findSection = (predicate, fallbackConfig = null, fallbackItemKeys = []) => {
+    const section = manifestSections.find(predicate);
+
+    if (section) {
+      return {
+        fields: section.fieldRows,
+        itemKeys: section.itemKeys,
+        key: section.key,
+      };
+    }
+
+    if (isRecord(fallbackConfig)) {
+      return getTeamSheetSectionConfig(fallbackConfig, fallbackItemKeys);
+    }
+
+    return {
+      fields: [],
+      key: "",
+      itemKeys: [],
+    };
+  };
+
+  const isCoachSection = (section) => {
+    const itemKeys = section.itemKeys.map(normalizeManifestKey);
+    return !section.isList && (section.normalizedKey.includes("coach") || itemKeys.some((itemKey) => itemKey.includes("coach")));
+  };
+
+  const isHeadCoachSection = (section) => {
+    const itemKeys = section.itemKeys.map(normalizeManifestKey);
+    return isCoachSection(section) && (section.normalizedKey.includes("head") || itemKeys.some((itemKey) => itemKey.includes("head")));
+  };
+
+  const isPlayerSection = (section) => {
+    const itemKeys = section.itemKeys.map(normalizeManifestKey);
+    return (
+      section.isList &&
+      itemKeys.some((itemKey) => itemKey.includes("player") || itemKey.includes("jersey") || itemKey === "name" || itemKey === "surname")
+    );
+  };
+
+  const isSubstituteSection = (section) => isPlayerSection(section) && /(sub|replacement|bench)/.test(section.normalizedKey);
+  const isHeaderSection = (section) => {
+    const itemKeys = section.itemKeys.map(normalizeManifestKey);
+    return (
+      !section.isList &&
+      (section.normalizedKey === "header" ||
+        itemKeys.some((itemKey) => itemKey.includes("team_name") || itemKey.includes("team_logo")))
+    );
+  };
 
   return {
-    coach: getTeamSheetSectionConfig(manifestConfig.coach, ["name", "surname"]),
-    headCoach: getTeamSheetSectionConfig(manifestConfig.head_coach, ["name", "surname"]),
-    playersList: getTeamSheetSectionConfig(manifestConfig.players_list, ["jersey_number", "name", "surname"]),
-    teamLogo: getTeamSheetSectionConfig(manifestConfig.team_logo, ["#img:team_logo"]),
-    teamName: getTeamSheetSectionConfig(manifestConfig.team_name, ["name"]),
+    allSections: manifestSections,
+    coach: findSection((section) => isCoachSection(section) && !isHeadCoachSection(section), manifestConfig.coach, ["name", "surname"]),
+    headCoach: findSection(isHeadCoachSection, manifestConfig.head_coach, ["name", "surname"]),
+    homeTeamReplacements: getTeamSheetSectionConfig(
+      manifestConfig.home_team_replacements,
+      ["jersey_number", "name", "surname"]
+    ),
+    awayTeamReplacements: getTeamSheetSectionConfig(
+      manifestConfig.away_team_replacements,
+      ["jersey_number", "name", "surname"]
+    ),
+    matchHeader: findSection((section) => section.normalizedKey === "match_header", manifestConfig.match_header, [
+      "#img:home_team_logo",
+      "home_team_name",
+      "#img:away_team_logo",
+      "away_team_name",
+    ]),
+    playersList: findSection(
+      (section) => isPlayerSection(section) && !isSubstituteSection(section),
+      manifestConfig.players_list,
+      ["jersey_number", "name", "surname"]
+    ),
+    substitutes: findSection((section) => isSubstituteSection(section), null, []),
+    teamHeader: findSection(isHeaderSection, manifestConfig.header, ["team_name", "#img:team_logo"]),
+    teamLogo: findSection(
+      (section) => !section.isList && section.itemKeys.map(normalizeManifestKey).some((itemKey) => itemKey.includes("team_logo")),
+      manifestConfig.team_logo,
+      ["#img:team_logo"]
+    ),
+    teamName: findSection(
+      (section) => !section.isList && section.itemKeys.map(normalizeManifestKey).some((itemKey) => itemKey.includes("team_name") || itemKey === "name"),
+      manifestConfig.team_name,
+      ["name"]
+    ),
   };
+}
+
+function isTeamSheetReplacementsManifest(manifestSections) {
+  return Boolean(
+    manifestSections?.homeTeamReplacements?.fields?.length || manifestSections?.awayTeamReplacements?.fields?.length
+  );
 }
 
 function buildTeamNameOptions(teamData, fallbackLabel) {
@@ -1347,33 +1618,49 @@ function resolveTeamSheetPresetSelection(teamOptions, preset, playerLimit) {
     return null;
   }
 
-  const presetPlayers = Array.isArray(preset.players_list?.data)
-    ? preset.players_list.data
-    : Array.isArray(preset.players_list)
-      ? preset.players_list
-      : Array.isArray(preset.players)
-        ? preset.players
-        : [];
+  const presetPlayers = [
+    preset.players_list?.data,
+    preset.body_starting_lineup?.data,
+    preset.starting_lineup?.data,
+    preset.players_list,
+    preset.starting_lineup,
+    preset.players,
+  ].find((candidate) => Array.isArray(candidate)) || [];
+
+  const coachReference = preset.coach?.data || preset.coach || preset.body_coach?.data || preset.body_coach;
+  const headCoachReference =
+    preset.head_coach?.data || preset.head_coach || preset.body_head_coach?.data || preset.body_head_coach;
+  const teamNameReference =
+    preset.team_name?.data?.name ||
+    preset.team_name?.name ||
+    preset.team_name ||
+    preset.header?.data?.team_name ||
+    teamOption.teamNameOptions[0]?.value ||
+    "";
 
   return {
-    coachId: findTeamSheetOptionByReference(teamOption.coaches, preset.coach?.data || preset.coach)?.id || "",
-    headCoachId:
-      findTeamSheetOptionByReference(teamOption.coaches, preset.head_coach?.data || preset.head_coach)?.id || "",
+    coachId: findTeamSheetOptionByReference(teamOption.coaches, coachReference)?.id || "",
+    headCoachId: findTeamSheetOptionByReference(teamOption.coaches, headCoachReference)?.id || "",
     playerIds: presetPlayers
       .map((player) => findTeamSheetOptionByReference(teamOption.players, player)?.id || "")
       .filter(Boolean)
       .slice(0, playerLimit),
     teamKey: teamOption.teamKey,
-    teamName:
-      preset.team_name?.data?.name || preset.team_name?.name || preset.team_name || teamOption.teamNameOptions[0]?.value || "",
+    teamName: teamNameReference,
   };
 }
 
 function getTeamSheetValueByKey(source, key, type, teamName = "", options = {}) {
+  const displayName =
+    type === "player"
+      ? getPlayerDisplayName(source)
+      : type === "coach"
+        ? getPersonDisplayName(source, "Coach")
+        : "";
   const imagePayload = buildImageManifestPayload(key, {
     awayTeamName: options.awayTeamName,
     homeTeamName: options.homeTeamName,
-    playerName: type === "player" ? getPlayerDisplayName(source) : "",
+    playerName: displayName,
     teamName: options.teamImageName || teamName,
   });
 
@@ -1382,50 +1669,188 @@ function getTeamSheetValueByKey(source, key, type, teamName = "", options = {}) 
   }
 
   const normalizedKey = String(key || "").trim().toLowerCase();
+  const canonicalKey = normalizedKey
+    .replace(/^head_coach_/, "")
+    .replace(/^coach_/, "")
+    .replace(/^player_/, "")
+    .replace(/^team_/, "");
 
-  if (type === "player" && ["image", "player_image", "playerimage"].includes(normalizedKey)) {
+  if (["image", "player_image", "playerimage", "coach_photo", "player_photo"].includes(canonicalKey)) {
     return buildImageManifestPayload("#img:team:player", {
       awayTeamName: options.awayTeamName,
       homeTeamName: options.homeTeamName,
-      playerName: getPlayerDisplayName(source),
+      playerName: displayName,
       teamName: options.teamImageName || teamName,
     });
   }
 
   if (type === "team") {
-    if (normalizedKey === "name") {
+    if (canonicalKey === "name") {
       return teamName;
     }
 
-    if (normalizedKey.includes("short")) {
+    if (canonicalKey.includes("short")) {
       return source?.shortName || teamName;
     }
 
-    return source?.[key] ?? teamName;
+    return source?.[canonicalKey] ?? source?.[key] ?? teamName;
   }
 
   const nameParts = getPersonNameParts(source, type === "player" ? "Player" : "Coach");
 
-  if (["jersey_number", "shirt_number", "shirtnumber"].includes(normalizedKey)) {
+  if (["jersey_number", "shirt_number", "shirtnumber"].includes(canonicalKey)) {
     return getPlayerShirtNumber(source) ?? "";
   }
 
-  if (["name", "first_name", "firstname", "given_name", "givenname"].includes(normalizedKey)) {
+  if (["name", "first_name", "firstname", "given_name", "givenname"].includes(canonicalKey)) {
     return nameParts.name;
   }
 
-  if (["surname", "last_name", "lastname", "family_name", "familyname"].includes(normalizedKey)) {
+  if (["surname", "last_name", "lastname", "family_name", "familyname"].includes(canonicalKey)) {
     return nameParts.surname;
   }
 
-  if (["known_name", "knownname", "full_name", "fullname", "display_name", "displayname"].includes(normalizedKey)) {
+  if (["known_name", "knownname", "full_name", "fullname", "display_name", "displayname"].includes(canonicalKey)) {
     return nameParts.displayName;
   }
 
-  return source?.[key] ?? source?.value ?? "";
+  return source?.[canonicalKey] ?? source?.[key] ?? source?.value ?? "";
+}
+
+function resolveTeamSheetManifestValue(itemKey, source, type, selectedData, teamName, options = {}) {
+  const normalizedKey = normalizeManifestKey(itemKey);
+
+  if (normalizedKey.includes("competition")) {
+    return selectedData?.competition?.name || "";
+  }
+
+  if (normalizedKey.includes("season")) {
+    return selectedData?.season?.name || "";
+  }
+
+  if (normalizedKey.includes("venue")) {
+    return selectedData?.venue?.name || "";
+  }
+
+  return getTeamSheetValueByKey(source, itemKey, type, teamName, options);
+}
+
+function buildTeamSheetManifestRows(players, itemKeys, rowCount, selectedData, teamName, teamImageName) {
+  return Array.from({ length: rowCount }, (_, index) => {
+    const player = players[index] || null;
+
+    return itemKeys.reduce((result, itemKey) => {
+      result[itemKey] = player
+        ? resolveTeamSheetManifestValue(itemKey, player, "player", selectedData, teamName, {
+            awayTeamName: getTeamNameValue(selectedData?.awayTeam?.team || {}),
+            homeTeamName: getTeamNameValue(selectedData?.homeTeam?.team || {}),
+            teamImageName,
+          })
+        : "";
+      return result;
+    }, {});
+  });
+}
+
+function buildTeamSheetReplacementRows(teamData, itemKeys, rowCount, selectedData) {
+  const resolvedItemKeys = Array.isArray(itemKeys) && itemKeys.length ? itemKeys : ["jersey_number", "name", "surname"];
+  const team = teamData?.team || {};
+  const resolvedTeamName = getTeamNameValue(team);
+  const resolvedTeamImageName = getTeamImageNameValue(team) || resolvedTeamName;
+  const homeTeamName = getTeamNameValue(selectedData?.homeTeam?.team || {});
+  const awayTeamName = getTeamNameValue(selectedData?.awayTeam?.team || {});
+  const replacements = sortPlayersByShirtNumber((teamData?.players || []).filter((player) => isSubstitutePlayer(player)));
+
+  return Array.from({ length: rowCount }, (_, index) => {
+    const player = replacements[index] || null;
+
+    return resolvedItemKeys.reduce((result, itemKey) => {
+      result[itemKey] = player
+        ? getTeamSheetValueByKey(player, itemKey, "player", resolvedTeamName, {
+            awayTeamName,
+            homeTeamName,
+            teamImageName: resolvedTeamImageName,
+          })
+        : "";
+      return result;
+    }, {});
+  });
+}
+
+function buildTeamSheetMatchHeaderData(selectedData, itemKeys) {
+  const resolvedItemKeys = Array.isArray(itemKeys) && itemKeys.length
+    ? itemKeys
+    : ["#img:home_team_logo", "home_team_name", "#img:away_team_logo", "away_team_name"];
+  const homeTeam = selectedData?.homeTeam?.team || {};
+  const awayTeam = selectedData?.awayTeam?.team || {};
+
+  return resolvedItemKeys.reduce((result, itemKey) => {
+    const valueMap = {
+      away_team_name: getTeamNameValue(awayTeam),
+      home_team_name: getTeamNameValue(homeTeam),
+    };
+
+    result[itemKey] =
+      valueMap[itemKey] ??
+      buildImageManifestPayload(itemKey, {
+        awayTeamName: getTeamImageNameValue(awayTeam),
+        homeTeamName: getTeamImageNameValue(homeTeam),
+      }) ??
+      "";
+    return result;
+  }, {});
 }
 
 function buildManifestLikeTeamSheetData(selectedData, selection, manifestSections) {
+  if (isTeamSheetReplacementsManifest(manifestSections)) {
+    const matchHeaderItemKeys = manifestSections?.matchHeader?.itemKeys || [
+      "#img:home_team_logo",
+      "home_team_name",
+      "#img:away_team_logo",
+      "away_team_name",
+    ];
+    const homeReplacementItemKeys = manifestSections?.homeTeamReplacements?.itemKeys || [
+      "jersey_number",
+      "name",
+      "surname",
+    ];
+    const awayReplacementItemKeys = manifestSections?.awayTeamReplacements?.itemKeys || [
+      "jersey_number",
+      "name",
+      "surname",
+    ];
+    const homeReplacementRowCount = manifestSections?.homeTeamReplacements?.fields?.length || 0;
+    const awayReplacementRowCount = manifestSections?.awayTeamReplacements?.fields?.length || 0;
+
+    return {
+      competition: selectedData?.competition ?? null,
+      season: selectedData?.season ?? null,
+      venue: selectedData?.venue ?? null,
+      match_header: {
+        data: buildTeamSheetMatchHeaderData(selectedData, matchHeaderItemKeys),
+        item: matchHeaderItemKeys,
+      },
+      home_team_replacements: {
+        data: buildTeamSheetReplacementRows(
+          selectedData?.homeTeam,
+          homeReplacementItemKeys,
+          homeReplacementRowCount,
+          selectedData
+        ),
+        list_item: homeReplacementItemKeys,
+      },
+      away_team_replacements: {
+        data: buildTeamSheetReplacementRows(
+          selectedData?.awayTeam,
+          awayReplacementItemKeys,
+          awayReplacementRowCount,
+          selectedData
+        ),
+        list_item: awayReplacementItemKeys,
+      },
+    };
+  }
+
   const teamOption = selection?.teamOption;
   if (!teamOption) {
     return null;
@@ -1433,23 +1858,89 @@ function buildManifestLikeTeamSheetData(selectedData, selection, manifestSection
 
   const playersById = new Map(teamOption.players.map((player) => [player.id, player.raw]));
   const coachesById = new Map(teamOption.coaches.map((coach) => [coach.id, coach.raw]));
-  const playerItemKeys = manifestSections?.playersList?.itemKeys || ["jersey_number", "name", "surname"];
-  const coachItemKeys = manifestSections?.coach?.itemKeys || ["name", "surname"];
-  const headCoachItemKeys = manifestSections?.headCoach?.itemKeys || ["name", "surname"];
-  const teamLogoItemKeys = manifestSections?.teamLogo?.itemKeys || ["#img:team_logo"];
-  const teamNameItemKeys = manifestSections?.teamName?.itemKeys || ["name"];
   const resolvedTeamName = selection.teamName || teamOption.teamNameOptions[0]?.value || teamOption.label;
   const resolvedTeamImageName = getTeamImageNameValue(teamOption.teamData?.team || {}) || resolvedTeamName;
   const homeTeamName = getTeamNameValue(selectedData?.homeTeam?.team || {});
   const awayTeamName = getTeamNameValue(selectedData?.awayTeam?.team || {});
+  const selectedPlayers = selection.playerIds.map((playerId) => playersById.get(playerId)).filter(Boolean);
+  const selectedPlayerIdSet = new Set(selection.playerIds);
+  const remainingPlayers = teamOption.players
+    .filter((player) => !selectedPlayerIdSet.has(player.id))
+    .map((player) => player.raw);
+  const substitutePlayers = sortPlayersByShirtNumber(
+    remainingPlayers.some((player) => isSubstitutePlayer(player))
+      ? remainingPlayers.filter((player) => isSubstitutePlayer(player))
+      : remainingPlayers
+  );
+  const coach = coachesById.get(selection.coachId) || null;
+  const headCoach = coachesById.get(selection.headCoachId) || coachesById.get(selection.coachId) || null;
+  const allSections = Array.isArray(manifestSections?.allSections) ? manifestSections.allSections : [];
+
+  if (allSections.length) {
+    return allSections.reduce(
+      (result, section) => {
+        const itemKeys = section.itemKeys;
+
+        if (section.isList) {
+          const rowCount = section.fieldRows.length || selectedPlayers.length;
+          result[section.key] = {
+            data: /(sub|replacement|bench)/.test(section.normalizedKey)
+              ? buildTeamSheetManifestRows(
+                  substitutePlayers,
+                  itemKeys,
+                  rowCount,
+                  selectedData,
+                  resolvedTeamName,
+                  resolvedTeamImageName
+                )
+              : buildTeamSheetManifestRows(
+                  selectedPlayers,
+                  itemKeys,
+                  rowCount,
+                  selectedData,
+                  resolvedTeamName,
+                  resolvedTeamImageName
+                ),
+            list_item: itemKeys,
+          };
+          return result;
+        }
+
+        const usesHeadCoach = section.normalizedKey.includes("head") && section.normalizedKey.includes("coach");
+        const usesCoach = !usesHeadCoach && section.normalizedKey.includes("coach");
+        const sectionSource = usesHeadCoach ? headCoach : usesCoach ? coach : teamOption.teamData?.team || {};
+        const sectionType = usesHeadCoach || usesCoach ? "coach" : "team";
+
+        result[section.key] = {
+          data: itemKeys.reduce((sectionData, itemKey) => {
+            sectionData[itemKey] = sectionSource
+              ? resolveTeamSheetManifestValue(itemKey, sectionSource, sectionType, selectedData, resolvedTeamName, {
+                  awayTeamName,
+                  homeTeamName,
+                  teamImageName: resolvedTeamImageName,
+                })
+              : "";
+            return sectionData;
+          }, {}),
+          item: itemKeys,
+        };
+
+        return result;
+      },
+      {
+        competition: selectedData?.competition ?? null,
+        season: selectedData?.season ?? null,
+        venue: selectedData?.venue ?? null,
+      }
+    );
+  }
 
   return {
     competition: selectedData?.competition ?? null,
     season: selectedData?.season ?? null,
     venue: selectedData?.venue ?? null,
     coach: {
-      data: coachItemKeys.reduce((result, itemKey) => {
-        const coach = coachesById.get(selection.coachId) || null;
+      data: (manifestSections?.coach?.itemKeys || ["name", "surname"]).reduce((result, itemKey) => {
         result[itemKey] = coach
           ? getTeamSheetValueByKey(coach, itemKey, "coach", resolvedTeamName, {
               awayTeamName,
@@ -1459,11 +1950,10 @@ function buildManifestLikeTeamSheetData(selectedData, selection, manifestSection
           : "";
         return result;
       }, {}),
-      item: coachItemKeys,
+      item: manifestSections?.coach?.itemKeys || ["name", "surname"],
     },
     head_coach: {
-      data: headCoachItemKeys.reduce((result, itemKey) => {
-        const headCoach = coachesById.get(selection.headCoachId) || coachesById.get(selection.coachId) || null;
+      data: (manifestSections?.headCoach?.itemKeys || ["name", "surname"]).reduce((result, itemKey) => {
         result[itemKey] = headCoach
           ? getTeamSheetValueByKey(headCoach, itemKey, "coach", resolvedTeamName, {
               awayTeamName,
@@ -1473,14 +1963,11 @@ function buildManifestLikeTeamSheetData(selectedData, selection, manifestSection
           : "";
         return result;
       }, {}),
-      item: headCoachItemKeys,
+      item: manifestSections?.headCoach?.itemKeys || ["name", "surname"],
     },
     players_list: {
-      data: selection.playerIds
-        .map((playerId) => playersById.get(playerId))
-        .filter(Boolean)
-        .map((player) =>
-          playerItemKeys.reduce((result, itemKey) => {
+      data: selectedPlayers.map((player) =>
+          (manifestSections?.playersList?.itemKeys || ["jersey_number", "name", "surname"]).reduce((result, itemKey) => {
             result[itemKey] = getTeamSheetValueByKey(player, itemKey, "player", resolvedTeamName, {
               awayTeamName,
               homeTeamName,
@@ -1489,10 +1976,10 @@ function buildManifestLikeTeamSheetData(selectedData, selection, manifestSection
             return result;
           }, {})
         ),
-      list_item: playerItemKeys,
+      list_item: manifestSections?.playersList?.itemKeys || ["jersey_number", "name", "surname"],
     },
     team_logo: {
-      data: teamLogoItemKeys.reduce((result, itemKey) => {
+      data: (manifestSections?.teamLogo?.itemKeys || ["#img:team_logo"]).reduce((result, itemKey) => {
         result[itemKey] = getTeamSheetValueByKey(teamOption.teamData?.team || {}, itemKey, "team", resolvedTeamName, {
           awayTeamName,
           homeTeamName,
@@ -1500,10 +1987,10 @@ function buildManifestLikeTeamSheetData(selectedData, selection, manifestSection
         });
         return result;
       }, {}),
-      item: teamLogoItemKeys,
+      item: manifestSections?.teamLogo?.itemKeys || ["#img:team_logo"],
     },
     team_name: {
-      data: teamNameItemKeys.reduce((result, itemKey) => {
+      data: (manifestSections?.teamName?.itemKeys || ["name"]).reduce((result, itemKey) => {
         result[itemKey] = getTeamSheetValueByKey(teamOption.teamData?.team || {}, itemKey, "team", resolvedTeamName, {
           awayTeamName,
           homeTeamName,
@@ -1511,27 +1998,23 @@ function buildManifestLikeTeamSheetData(selectedData, selection, manifestSection
         });
         return result;
       }, {}),
-      item: teamNameItemKeys,
+      item: manifestSections?.teamName?.itemKeys || ["name"],
     },
   };
 }
 
 const STANDINGS_COLUMN_HEADER_LABELS = {
-  difference: "+/-",
+  bonus: "BP",
+  difference: "Diff",
   drawn: "D",
   lost: "L",
-  played: "P",
+  played: "PLD",
   points: "PTS",
   won: "W",
 };
 
 function isStandingsManifest(manifest) {
-  return Boolean(
-    isRecord(manifest) &&
-      isRecord(manifest.standings_list) &&
-      isRecord(manifest.column_headers) &&
-      isRecord(manifest.pool_name)
-  );
+  return Boolean(isRecord(manifest) && isRecord(manifest.standings_list));
 }
 
 function getValueByAliases(source, aliases = []) {
@@ -1722,64 +2205,88 @@ function buildStandingsPoolPayloads(selectedData, selectedDataType, manifest, op
   const standingFields = Array.isArray(manifest?.standings_list?.fields) ? manifest.standings_list.fields : [];
   const standingKeys = getManifestSectionItemKeys(manifest?.standings_list);
   const titleValue = getStandingsTitleValue(selectedData, options);
+  const standingRowLimit = Math.max(standingFields.length || 0, 1);
 
   return pools
-    .map((pool, poolIndex) => {
-      const rows = pool.rows
-        .slice(0, standingFields.length)
-        .map((row, rowIndex) => ({
-          difference: normalizeStandingsValue(
-            getValueByAliases(row, ["difference", "pointsDifference", "pointDifference", "pointsDiff", "diff"])
-          ),
-          drawn: normalizeStandingsValue(getValueByAliases(row, ["drawn", "draw", "draws", "tied"])),
-          lost: normalizeStandingsValue(getValueByAliases(row, ["lost", "losses", "l"])),
-          played: normalizeStandingsValue(getValueByAliases(row, ["played", "matchesPlayed", "p"])),
-          points: normalizeStandingsValue(getValueByAliases(row, ["points", "pts", "tablePoints"])),
-          pool_number: getPoolNumber(pool.source, row, poolIndex),
-          position: normalizeStandingsValue(getValueByAliases(row, ["position", "rank", "pos"]) || rowIndex + 1),
-          team_logo: normalizeStandingsValue(
-            getValueByAliases(row, [
-              "team_logo",
-              "teamLogo",
-              "team.logo",
-              "team.image",
-              "team.badge",
-              "team.crest",
-              "logo",
-              "image",
-            ])
-          ),
-          team_name: normalizeStandingsValue(
-            getValueByAliases(row, ["team_name", "teamName", "team.shortName", "team.name", "name"])
-          ),
-          won: normalizeStandingsValue(getValueByAliases(row, ["won", "wins", "w"])),
-        }))
-        .map((row) =>
-          standingKeys.reduce((result, itemKey) => {
-            result[itemKey] = getStandingsItemValue(itemKey, row);
-            return result;
-          }, {})
-        );
+    .flatMap((pool, poolIndex) => {
+      const normalizedRows = pool.rows.map((row, rowIndex) => ({
+        bonus: normalizeStandingsValue(
+          getValueByAliases(row, ["bonus", "bonusPoints", "bonus_points", "b"])
+        ),
+        difference: normalizeStandingsValue(
+          getValueByAliases(row, ["difference", "pointsDifference", "pointDifference", "pointsDiff", "diff"])
+        ),
+        drawn: normalizeStandingsValue(getValueByAliases(row, ["drawn", "draw", "draws", "tied"])),
+        lost: normalizeStandingsValue(getValueByAliases(row, ["lost", "losses", "l"])),
+        played: normalizeStandingsValue(getValueByAliases(row, ["played", "matchesPlayed", "p"])),
+        points: normalizeStandingsValue(getValueByAliases(row, ["points", "pts", "tablePoints"])),
+        pool_number: getPoolNumber(pool.source, row, poolIndex),
+        position: normalizeStandingsValue(getValueByAliases(row, ["position", "rank", "pos"]) || rowIndex + 1),
+        team_logo: normalizeStandingsValue(
+          getValueByAliases(row, [
+            "team_logo",
+            "teamLogo",
+            "team.logo",
+            "team.image",
+            "team.badge",
+            "team.crest",
+            "logo",
+            "image",
+          ])
+        ),
+        team_name: normalizeStandingsValue(
+          getValueByAliases(row, ["team_name", "teamName", "team.shortName", "team.name", "name"])
+        ),
+        won: normalizeStandingsValue(getValueByAliases(row, ["won", "wins", "w"])),
+      }));
 
-      if (!rows.length) {
-        return null;
-      }
+      const pageCount = Math.ceil(normalizedRows.length / standingRowLimit);
 
-      const poolName = pool.poolName;
+      return Array.from({ length: pageCount }, (_, pageIndex) => {
+        const rows = normalizedRows
+          .slice(pageIndex * standingRowLimit, (pageIndex + 1) * standingRowLimit)
+          .map((row) =>
+            standingKeys.reduce((result, itemKey) => {
+              result[itemKey] = getStandingsItemValue(itemKey, row);
+              return result;
+            }, {})
+          );
 
-      return {
-        data: {
-          column_headers: buildStandingsColumnHeaders(manifest),
-          pool_name: buildManifestSectionData(manifest?.pool_name, poolName, ["pool_name", "poolName", "name"]),
+        if (!rows.length) {
+          return null;
+        }
+
+        const poolName = pool.poolName;
+        const payloadData = {
           standings_list: {
             data: rows,
             list_item: standingKeys,
           },
-          title: buildManifestSectionData(manifest?.title, titleValue, ["title", "name"]),
-        },
-        pageTitle: `${titleValue} | ${poolName}`,
-        poolName,
-      };
+        };
+
+        if (isRecord(manifest?.column_headers)) {
+          payloadData.column_headers = buildStandingsColumnHeaders(manifest);
+        }
+
+        if (isRecord(manifest?.pool_name)) {
+          payloadData.pool_name = buildManifestSectionData(manifest?.pool_name, poolName, ["pool_name", "poolName", "name"]);
+        }
+
+        if (isRecord(manifest?.title)) {
+          payloadData.title = buildManifestSectionData(manifest?.title, titleValue, ["title", "name"]);
+        }
+
+        const basePageTitle = isRecord(manifest?.pool_name) ? `${titleValue} | ${poolName}` : titleValue;
+
+        return {
+          data: payloadData,
+          pageNumber: pageIndex + 1,
+          pageTitle: pageCount > 1 ? `${basePageTitle} | Page ${pageIndex + 1}` : basePageTitle,
+          poolName,
+          previewLabel: pageCount > 1 ? `${poolName} | Page ${pageIndex + 1}` : poolName,
+          totalPages: pageCount,
+        };
+      });
     })
     .filter(Boolean);
 }
@@ -2019,6 +2526,11 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
   const teamSheetManifestSections = useMemo(
     () => getTeamSheetManifestSections(selectedManifest || preparedTemplate?.mapping),
     [preparedTemplate?.mapping, selectedManifest]
+  );
+
+  const isTeamSheetReplacementMode = useMemo(
+    () => isTeamSheetReplacementsManifest(teamSheetManifestSections),
+    [teamSheetManifestSections]
   );
 
   const teamSheetPlayerLimit = useMemo(() => {
@@ -2397,12 +2909,31 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
   }, [selectedTeamSheetCoachId, selectedTeamSheetHeadCoachId, selectedTeamSheetName, selectedTeamSheetPlayerIds, selectedTeamSheetTeam]);
 
   const teamSheetSelectionCount = useMemo(
-    () =>
-      selectedTeamSheetPlayerIds.length +
-      Number(Boolean(selectedTeamSheetCoachId)) +
-      Number(Boolean(selectedTeamSheetHeadCoachId)) +
-      Number(Boolean(selectedTeamSheetName)),
-    [selectedTeamSheetCoachId, selectedTeamSheetHeadCoachId, selectedTeamSheetName, selectedTeamSheetPlayerIds.length]
+    () => {
+      if (isTeamSheetReplacementMode) {
+        const homeLimit = teamSheetManifestSections?.homeTeamReplacements?.fields?.length || 0;
+        const awayLimit = teamSheetManifestSections?.awayTeamReplacements?.fields?.length || 0;
+        const homeCount = sortPlayersByShirtNumber((selectedData?.homeTeam?.players || []).filter((player) => isSubstitutePlayer(player))).slice(0, homeLimit).length;
+        const awayCount = sortPlayersByShirtNumber((selectedData?.awayTeam?.players || []).filter((player) => isSubstitutePlayer(player))).slice(0, awayLimit).length;
+        return homeCount + awayCount;
+      }
+
+      return (
+        selectedTeamSheetPlayerIds.length +
+        Number(Boolean(selectedTeamSheetCoachId)) +
+        Number(Boolean(selectedTeamSheetHeadCoachId)) +
+        Number(Boolean(selectedTeamSheetName))
+      );
+    },
+    [
+      isTeamSheetReplacementMode,
+      selectedData,
+      selectedTeamSheetCoachId,
+      selectedTeamSheetHeadCoachId,
+      selectedTeamSheetName,
+      selectedTeamSheetPlayerIds.length,
+      teamSheetManifestSections,
+    ]
   );
 
   const hasEnoughTeamSheetPlayers = useMemo(
@@ -2411,15 +2942,33 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
   );
 
   const hasCompleteTeamSheetSelection = useMemo(
-    () =>
-      Boolean(
+    () => {
+      if (isTeamSheetReplacementMode) {
+        return Boolean(selectedData?.homeTeam && selectedData?.awayTeam);
+      }
+
+      const requiresCoach = Boolean(teamSheetManifestSections?.coach?.itemKeys?.length);
+      const requiresHeadCoach = Boolean(teamSheetManifestSections?.headCoach?.itemKeys?.length);
+
+      return Boolean(
         selectedTeamSheetTeam &&
           selectedTeamSheetName &&
-          selectedTeamSheetCoachId &&
-          selectedTeamSheetHeadCoachId &&
+          (!requiresCoach || selectedTeamSheetCoachId) &&
+          (!requiresHeadCoach || selectedTeamSheetHeadCoachId) &&
           selectedTeamSheetPlayerIds.length === teamSheetPlayerLimit
-      ),
-    [selectedTeamSheetCoachId, selectedTeamSheetHeadCoachId, selectedTeamSheetName, selectedTeamSheetPlayerIds.length, selectedTeamSheetTeam, teamSheetPlayerLimit]
+      );
+    },
+    [
+      isTeamSheetReplacementMode,
+      selectedData,
+      selectedTeamSheetCoachId,
+      selectedTeamSheetHeadCoachId,
+      selectedTeamSheetName,
+      selectedTeamSheetPlayerIds.length,
+      selectedTeamSheetTeam,
+      teamSheetManifestSections,
+      teamSheetPlayerLimit,
+    ]
   );
 
   useEffect(() => {
@@ -2679,12 +3228,20 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
   );
 
   const homeTeamLabel = useMemo(
-    () => selectedData?.homeTeam?.team?.shortName || selectedData?.homeTeam?.team?.name || "Home",
+    () =>
+      selectedData?.teams?.homeTeam?.name ||
+      selectedData?.homeTeam?.team?.shortName ||
+      selectedData?.homeTeam?.team?.name ||
+      "Home",
     [selectedData]
   );
 
   const awayTeamLabel = useMemo(
-    () => selectedData?.awayTeam?.team?.shortName || selectedData?.awayTeam?.team?.name || "Away",
+    () =>
+      selectedData?.teams?.awayTeam?.name ||
+      selectedData?.awayTeam?.team?.shortName ||
+      selectedData?.awayTeam?.team?.name ||
+      "Away",
     [selectedData]
   );
 
@@ -3224,22 +3781,25 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
                   <h4>{titleText}</h4>
                   {subtitleText ? <p className="page-creation-overlay__title-meta">{subtitleText}</p> : null}
                 </div>
-                <span>{previewMode === "standings" ? `${previewSelectionCount} pools` : previewSelectionCount}</span>
+                <span>{previewMode === "standings" ? `${previewSelectionCount} pages` : previewSelectionCount}</span>
               </div>
 
               {previewMode === "standings" ? (
                 <div className="page-creation-overlay__preview-block">
                   <div className="page-creation-overlay__panel-header">
-                    <h4>Pools</h4>
+                    <h4>Pages</h4>
                     <span>{standingsPoolPayloads.length}</span>
                   </div>
 
                   <div className="page-creation-overlay__top-players-wrap">
                     <div className="page-creation-overlay__top-players-list">
                       {standingsPoolPayloads.map((poolPayload) => (
-                        <section className="page-creation-overlay__top-player-section" key={poolPayload.poolName}>
+                        <section
+                          className="page-creation-overlay__top-player-section"
+                          key={`${poolPayload.poolName}-${poolPayload.pageNumber || 1}`}
+                        >
                           <div className="page-creation-overlay__top-player-section-header">
-                            <h5>{poolPayload.poolName}</h5>
+                            <h5>{poolPayload.previewLabel || poolPayload.poolName}</h5>
                             <span>{poolPayload.data?.standings_list?.data?.length || 0}</span>
                           </div>
 
@@ -3867,6 +4427,25 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
 
                     <div className="page-creation-overlay__team-sheet-wrap">
                       <div className="page-creation-overlay__team-sheet-list">
+                        {isTeamSheetReplacementMode ? (
+                          <>
+                            <p className="page-creation-overlay__helper">
+                              This template uses both teams&apos; substitutes. Replacement rows are populated automatically from players with shirt numbers 16 and above.
+                            </p>
+
+                            <section className="page-creation-overlay__team-sheet-section">
+                              <div className="page-creation-overlay__team-sheet-section-header">
+                                <h5>Graphic Data</h5>
+                                <span>
+                                  {(filteredSelectedData?.home_team_replacements?.data?.length || 0) +
+                                    (filteredSelectedData?.away_team_replacements?.data?.length || 0)}
+                                </span>
+                              </div>
+                              <pre className="page-creation-overlay__json">{stringifyJson(filteredSelectedData || {})}</pre>
+                            </section>
+                          </>
+                        ) : (
+                          <>
                         <label className="page-creation-overlay__selector">
                           <span>Team source</span>
                           <select
@@ -3951,37 +4530,41 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
                           </div>
                         </section>
 
-                        <label className="page-creation-overlay__selector">
-                          <span>Coach</span>
-                          <select
-                            value={selectedTeamSheetCoachId}
-                            onChange={(event) => setSelectedTeamSheetCoachId(event.target.value)}
-                          >
-                            <option value="">Select coach</option>
-                            {(selectedTeamSheetTeam?.coaches || []).map((coach) => (
-                              <option key={coach.id} value={coach.id}>
-                                {coach.primary}
-                                {coach.secondary ? ` | ${coach.secondary}` : ""}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
+                        {teamSheetManifestSections?.coach?.itemKeys?.length ? (
+                          <label className="page-creation-overlay__selector">
+                            <span>Coach</span>
+                            <select
+                              value={selectedTeamSheetCoachId}
+                              onChange={(event) => setSelectedTeamSheetCoachId(event.target.value)}
+                            >
+                              <option value="">Select coach</option>
+                              {(selectedTeamSheetTeam?.coaches || []).map((coach) => (
+                                <option key={coach.id} value={coach.id}>
+                                  {coach.primary}
+                                  {coach.secondary ? ` | ${coach.secondary}` : ""}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        ) : null}
 
-                        <label className="page-creation-overlay__selector">
-                          <span>Head coach</span>
-                          <select
-                            value={selectedTeamSheetHeadCoachId}
-                            onChange={(event) => setSelectedTeamSheetHeadCoachId(event.target.value)}
-                          >
-                            <option value="">Select head coach</option>
-                            {(selectedTeamSheetTeam?.coaches || []).map((coach) => (
-                              <option key={coach.id} value={coach.id}>
-                                {coach.primary}
-                                {coach.secondary ? ` | ${coach.secondary}` : ""}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
+                        {teamSheetManifestSections?.headCoach?.itemKeys?.length ? (
+                          <label className="page-creation-overlay__selector">
+                            <span>Head coach</span>
+                            <select
+                              value={selectedTeamSheetHeadCoachId}
+                              onChange={(event) => setSelectedTeamSheetHeadCoachId(event.target.value)}
+                            >
+                              <option value="">Select head coach</option>
+                              {(selectedTeamSheetTeam?.coaches || []).map((coach) => (
+                                <option key={coach.id} value={coach.id}>
+                                  {coach.primary}
+                                  {coach.secondary ? ` | ${coach.secondary}` : ""}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        ) : null}
 
                         <label className="page-creation-overlay__selector">
                           <span>Team name</span>
@@ -4005,6 +4588,8 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
                           </div>
                           <pre className="page-creation-overlay__json">{stringifyJson(filteredSelectedData || {})}</pre>
                         </section>
+                          </>
+                        )}
                       </div>
                     </div>
                   </div>
