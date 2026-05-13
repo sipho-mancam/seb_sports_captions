@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useAppFlow } from "../context/AppFlowContext";
 import PageCreationOverlay from "./PageCreationOverlay";
-import { getRugbyVizDataTypes } from "../services/graphicsService";
+import { getRugbyVizDataTypes } from "../services/rugbyVizService";
 
 function notifyRequestError(message, fallbackMessage) {
   const resolvedMessage = message || fallbackMessage;

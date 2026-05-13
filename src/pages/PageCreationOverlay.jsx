@@ -2,16 +2,16 @@ import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { useParams } from "react-router-dom";
 import { useAppFlow } from "../context/AppFlowContext";
+import { buildFieldValuesFromTemplate } from "../services/fieldValueBuilder";
 import {
-  buildFieldValuesFromTemplate,
   createGraphicPage,
   getGraphicManifest,
-  getActiveProfileStatsPageDefaults,
   getGraphicShows,
   getGraphicTemplates,
-  getRugbyVizSelectedData,
   prepareGraphicTemplate,
-} from "../services/graphicsService";
+} from "../services/graphicsMseService";
+import { getActiveProfileStatsPageDefaults } from "../services/profileService";
+import { getRugbyVizSelectedData } from "../services/rugbyVizService";
 
 function stringifyJson(value) {
   return JSON.stringify(value, null, 2);

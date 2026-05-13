@@ -5,7 +5,7 @@ import {
   getActiveProfile,
   getProfiles,
   setActiveProfile as activateProfile,
-} from "../services/graphicsService";
+} from "../services/profileService";
 
 const defaultProfileForm = {
   name: "investec",

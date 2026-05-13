@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
 import { useAppFlow } from "../context/AppFlowContext";
-import { fetchRugbyMatchesByDate } from "../services/graphicsService";
+import { fetchRugbyMatchesByDate } from "../services/rugbyVizService";
 
 const statsOptions = ["Match Stats", "Season Stats", "Historical Stats"];
 

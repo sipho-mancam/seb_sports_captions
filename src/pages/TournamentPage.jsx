@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
 import { useAppFlow } from "../context/AppFlowContext";
-import { getAvailableTournaments } from "../services/graphicsService";
+import { getAvailableTournaments } from "../services/tournamentService";
 
 function notifyRequestError(message, fallbackMessage) {
   const resolvedMessage = message || fallbackMessage;

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Navigate } from "react-router-dom";
 import { useAppFlow } from "../context/AppFlowContext";
-import { fetchGraphicsData, sendToMseServer } from "../services/graphicsService";
+import { fetchGraphicsData, sendToMseServer } from "../services/graphicsMseService";
 
 function notifyRequestError(message, fallbackMessage) {
   const resolvedMessage = message || fallbackMessage;

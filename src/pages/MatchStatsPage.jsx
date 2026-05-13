@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { fetchRugbyMatchStats } from '../services/graphicsService';
+import { fetchRugbyMatchStats } from '../services/rugbyVizService';
 import '../styles/MatchStatsPage.css';
 
 const MATCH_STATS_REFRESH_INTERVAL_MS = 1000;
