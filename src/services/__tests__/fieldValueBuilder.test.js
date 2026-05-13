@@ -29,7 +29,7 @@ describe("FieldValueBuilderWorker", () => {
     };
 
     expect(worker.build(mapping, selectedData)).toEqual({
-      10: "Full Time",
+      10: "Full-Time",
       11: "24 - 17",
       12: "Francois",
       13: "Jose",

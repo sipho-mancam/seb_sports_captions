@@ -184,6 +184,177 @@ function normalizeMatchStatsPayload(payload) {
   return payload;
 }
 
+function normalizeFixturesPayload(payload) {
+  if (Array.isArray(payload)) {
+    return payload;
+  }
+
+  if (Array.isArray(payload?.fixtures)) {
+    return payload.fixtures;
+  }
+
+  if (Array.isArray(payload?.matches)) {
+    return payload.matches;
+  }
+
+  if (Array.isArray(payload?.data)) {
+    return payload.data;
+  }
+
+  return [];
+}
+
+function getTeamDisplayName(team, fallback) {
+  return team?.shortName || team?.name || fallback;
+}
+
+function getFixtureScore(team) {
+  return (
+    team?.score?.finalScore ??
+    team?.score?.ftScore ??
+    team?.score?.currentScore ??
+    team?.score?.htScore ??
+    null
+  );
+}
+
+function formatParts(date, timeZone, options) {
+  const formatter = new Intl.DateTimeFormat("en-GB", {
+    timeZone,
+    ...options,
+  });
+
+  return formatter.formatToParts(date).reduce((result, part) => {
+    if (part.type !== "literal") {
+      result[part.type] = part.value;
+    }
+
+    return result;
+  }, {});
+}
+
+function getFixtureDayKey(date, timeZone) {
+  const { year, month, day } = formatParts(date, timeZone, {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+
+  return `${year}-${month}-${day}`;
+}
+
+function formatFixtureDayLabel(date, timeZone) {
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone,
+    weekday: "short",
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+  }).format(date);
+}
+
+function formatFixtureTimeLabel(date, timeZone) {
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(date);
+}
+
+function resolveUserTimeZone(options = {}) {
+  if (typeof options.timeZone === "string" && options.timeZone.trim()) {
+    return options.timeZone.trim();
+  }
+
+  const resolvedTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return resolvedTimeZone || "UTC";
+}
+
+function normalizeFixtureEntry(fixture, index, timeZone) {
+  const parsedDate = fixture?.dateTime ? new Date(fixture.dateTime) : null;
+
+  if (!parsedDate || Number.isNaN(parsedDate.getTime())) {
+    return null;
+  }
+
+  const dayKey = getFixtureDayKey(parsedDate, timeZone);
+  const homeTeamName = getFixtureDisplayName(fixture?.homeTeam, "Home Team");
+  const awayTeamName = getFixtureDisplayName(fixture?.awayTeam, "Away Team");
+  const homeScore = getFixtureScore(fixture?.homeTeam);
+  const awayScore = getFixtureScore(fixture?.awayTeam);
+
+  return {
+    id: String(fixture?.id ?? `fixture-${index + 1}`),
+    dateTime: fixture.dateTime,
+    dayKey,
+    dayLabel: formatFixtureDayLabel(parsedDate, timeZone),
+    timeLabel: formatFixtureTimeLabel(parsedDate, timeZone),
+    homeScore,
+    awayScore,
+    competitionName: fixture?.competition?.name || fixture?.competition?.seasonName || "Competition",
+    seasonName: fixture?.season?.name || "Season",
+    homeTeamName,
+    awayTeamName,
+    label: `${homeTeamName} vs ${awayTeamName}`,
+    venueName: fixture?.venue?.name || "Venue TBC",
+    roundLabel: fixture?.title ? `Round ${fixture.title}` : fixture?.round ? `Round ${fixture.round}` : "",
+    scoreLabel:
+      homeScore === null && awayScore === null
+        ? ""
+        : `${homeScore ?? "-"} - ${awayScore ?? "-"}`,
+    statusLabel: fixture?.matchStatus || fixture?.period || "fixture",
+    raw: fixture,
+  };
+}
+
+function getFixtureDisplayName(team, fallback) {
+  return getTeamDisplayName(team, fallback);
+}
+
+function buildGroupedFixtureDays(fixtures) {
+  const groupedDays = new Map();
+
+  fixtures.forEach((fixture) => {
+    if (!groupedDays.has(fixture.dayKey)) {
+      groupedDays.set(fixture.dayKey, {
+        dayKey: fixture.dayKey,
+        dayLabel: fixture.dayLabel,
+        fixtures: [],
+      });
+    }
+
+    groupedDays.get(fixture.dayKey).fixtures.push(fixture);
+  });
+
+  return Array.from(groupedDays.values());
+}
+
+function hasFixtureScore(fixture) {
+  return fixture.homeScore !== null || fixture.awayScore !== null;
+}
+
+function getRelativeDayKey(referenceDate, timeZone, dayOffset) {
+  const shiftedDate = new Date(referenceDate);
+  shiftedDate.setUTCDate(shiftedDate.getUTCDate() + dayOffset);
+  return getFixtureDayKey(shiftedDate, timeZone);
+}
+
+function filterFixturesByView(fixtures, referenceDayKey, view, options = {}) {
+  if (view === "results") {
+    const earliestAllowedDayKey = getRelativeDayKey(options.referenceDate, options.timeZone, -4);
+
+    return fixtures.filter(
+      (fixture) =>
+        hasFixtureScore(fixture) &&
+        fixture.dayKey <= referenceDayKey &&
+        fixture.dayKey >= earliestAllowedDayKey
+    );
+  }
+
+  return fixtures.filter((fixture) => !hasFixtureScore(fixture) && fixture.dayKey >= referenceDayKey);
+}
+
 export class RugbyVizQueryWorker {
   constructor(client = apiClient) {
     this.client = client;
@@ -308,8 +479,44 @@ export class RugbyVizMatchWorker {
   }
 }
 
+export class RugbyVizFixturesWorker {
+  getFixturesByDay(payload, options = {}) {
+    const referenceDate = options.referenceDate instanceof Date ? options.referenceDate : new Date();
+    const userTimeZone = resolveUserTimeZone(options);
+    const referenceDayKey = getFixtureDayKey(referenceDate, userTimeZone);
+    const view = options.view === "results" ? "results" : "fixtures";
+
+    const normalizedFixtures = normalizeFixturesPayload(payload)
+      .map((fixture, index) => normalizeFixtureEntry(fixture, index, userTimeZone))
+      .filter(Boolean)
+      .filter((fixture) =>
+        filterFixturesByView([fixture], referenceDayKey, view, {
+          referenceDate,
+          timeZone: userTimeZone,
+        }).length
+      )
+      .sort((left, right) => new Date(left.dateTime).getTime() - new Date(right.dateTime).getTime());
+
+    return {
+      competition: normalizedFixtures[0]?.raw?.competition ?? null,
+      season: normalizedFixtures[0]?.raw?.season ?? null,
+      userTimeZone,
+      view,
+      fixtureDays: buildGroupedFixtureDays(normalizedFixtures),
+    };
+  }
+
+  getUpcomingFixturesByDay(payload, options = {}) {
+    return this.getFixturesByDay(payload, {
+      ...options,
+      view: "fixtures",
+    });
+  }
+}
+
 export const rugbyVizQueryWorker = new RugbyVizQueryWorker();
 export const rugbyVizMatchWorker = new RugbyVizMatchWorker();
+export const rugbyVizFixturesWorker = new RugbyVizFixturesWorker();
 
 export function getRugbyVizDataTypes() {
   return rugbyVizQueryWorker.getDataTypes();
@@ -325,4 +532,12 @@ export function fetchRugbyMatchesByDate(fromDate, competitionId, seasonId) {
 
 export function fetchRugbyMatchStats(matchId, options = {}) {
   return rugbyVizMatchWorker.fetchMatchStats(matchId, options);
+}
+
+export function getUpcomingFixturesByDay(payload, options = {}) {
+  return rugbyVizFixturesWorker.getUpcomingFixturesByDay(payload, options);
+}
+
+export function getFixturesByDay(payload, options = {}) {
+  return rugbyVizFixturesWorker.getFixturesByDay(payload, options);
 }

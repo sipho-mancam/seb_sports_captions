@@ -63,6 +63,23 @@ export function AppFlowProvider({ children }) {
     []
   );
 
+  const setSelectedElementCollectionUri = useCallback(
+    (selectedElementCollectionUri) =>
+      setState((prev) => {
+        const nextUri = selectedElementCollectionUri || "";
+
+        if (prev.selectedElementCollectionUri === nextUri) {
+          return prev;
+        }
+
+        return {
+          ...prev,
+          selectedElementCollectionUri: nextUri,
+        };
+      }),
+    []
+  );
+
   const api = useMemo(
     () => ({
       state,
@@ -141,18 +158,14 @@ export function AppFlowProvider({ children }) {
           loadedGraphics: [],
           mseResponse: null,
         })),
-      setSelectedElementCollectionUri: (selectedElementCollectionUri) =>
-        setState((prev) => ({
-          ...prev,
-          selectedElementCollectionUri: selectedElementCollectionUri || "",
-        })),
+      setSelectedElementCollectionUri,
       setLoadedGraphics: (graphics) =>
         setState((prev) => ({ ...prev, loadedGraphics: graphics })),
       setMseResponse: (response) =>
         setState((prev) => ({ ...prev, mseResponse: response })),
       resetFlow: () => setState(initialState),
     }),
-    [setActiveProfile, state]
+    [setActiveProfile, setSelectedElementCollectionUri, state]
   );
 
   return <AppFlowContext.Provider value={api}>{children}</AppFlowContext.Provider>;

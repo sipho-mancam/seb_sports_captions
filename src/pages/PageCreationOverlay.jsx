@@ -11,7 +11,7 @@ import {
   prepareGraphicTemplate,
 } from "../services/graphicsMseService";
 import { getActiveProfileStatsPageDefaults } from "../services/profileService";
-import { getRugbyVizSelectedData } from "../services/rugbyVizService";
+import { getFixturesByDay, getRugbyVizSelectedData } from "../services/rugbyVizService";
 
 function stringifyJson(value) {
   return JSON.stringify(value, null, 2);
@@ -290,6 +290,11 @@ function getMatchStatSelectableItems(selectedData, selectedStatPaths) {
 function isPlayerStatsDataType(selectedDataType) {
   const combinedLabel = `${selectedDataType?.dataType || ""} ${selectedDataType?.type || ""}`.toLowerCase();
   return combinedLabel.includes("player") && combinedLabel.includes("stat") && !combinedLabel.includes("top 10") && !combinedLabel.includes("top10");
+}
+
+function isFixturesDataType(selectedDataType) {
+  const combinedLabel = `${selectedDataType?.dataType || ""} ${selectedDataType?.type || ""}`.toLowerCase();
+  return combinedLabel.includes("fixture");
 }
 
 function collectPlayerStatPaths(stats, parentPath = "", paths = new Set()) {
@@ -2296,6 +2301,31 @@ function buildFilteredSelectedData(selectedData, selectedFieldPaths, options = {
     return null;
   }
 
+  if (options.previewMode === "fixtures") {
+    const selectedDayKeySet = new Set(options.selectedFixtureDayKeys || []);
+    const selectedFixtureIdSet = new Set(options.selectedFixtureIds || []);
+
+    const fixtureDays = (selectedData.fixtureDays || [])
+      .filter((dayGroup) => selectedDayKeySet.has(dayGroup.dayKey))
+      .map((dayGroup) => ({
+        ...dayGroup,
+        fixtures: dayGroup.fixtures.filter((fixture) => selectedFixtureIdSet.has(fixture.id)),
+      }))
+      .filter((dayGroup) => dayGroup.fixtures.length);
+
+    if (!fixtureDays.length) {
+      return null;
+    }
+
+    return {
+      competition: selectedData.competition ?? null,
+      season: selectedData.season ?? null,
+      userTimeZone: selectedData.userTimeZone ?? null,
+      fixtureDays,
+      fixtures: fixtureDays.flatMap((dayGroup) => dayGroup.fixtures),
+    };
+  }
+
   if (options.previewMode === "standings") {
     return options.standingsPoolPayloads?.[0]?.data || null;
   }
@@ -2437,6 +2467,10 @@ const STAT_OPTIONS = [
 
 const COVERAGE_OPTIONS = ["basic", "performance"];
 const ROUND_OPTIONS = Array.from({ length: 16 }, (_, index) => String(index + 1));
+const FIXTURE_VIEW_OPTIONS = [
+  { label: "Fixtures", value: "fixtures" },
+  { label: "Results", value: "results" },
+];
 
 export default function PageCreationOverlay({ selectedDataType, onClose, onConfirm }) {
   const { matchId } = useParams();
@@ -2474,6 +2508,9 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
   const [selectedStatsPageKey, setSelectedStatsPageKey] = useState("");
   const [matchStatsSearchTerm, setMatchStatsSearchTerm] = useState("");
   const [playerStatsSearchTerm, setPlayerStatsSearchTerm] = useState("");
+  const [selectedFixtureView, setSelectedFixtureView] = useState("fixtures");
+  const [selectedFixtureDayKeys, setSelectedFixtureDayKeys] = useState([]);
+  const [selectedFixtureIds, setSelectedFixtureIds] = useState([]);
 
   const requiresStatSelection = useMemo(
     () =>
@@ -2506,6 +2543,7 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
     setSelectedStat("");
     setSelectedCoverage("");
     setSelectedRound("");
+    setSelectedFixtureView("fixtures");
   }, [selectedDataType]);
 
   const groupColumns = useMemo(() => {
@@ -2522,6 +2560,40 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
       }, new Set())
     );
   }, [selectedData]);
+
+  const fixtureDayGroups = useMemo(
+    () => (Array.isArray(selectedData?.fixtureDays) ? selectedData.fixtureDays : []),
+    [selectedData]
+  );
+
+  const selectedFixtureDaySet = useMemo(
+    () => new Set(selectedFixtureDayKeys),
+    [selectedFixtureDayKeys]
+  );
+
+  const selectedFixtureDayGroups = useMemo(
+    () => fixtureDayGroups.filter((dayGroup) => selectedFixtureDaySet.has(dayGroup.dayKey)),
+    [fixtureDayGroups, selectedFixtureDaySet]
+  );
+
+  const selectedFixtures = useMemo(() => {
+    const selectedIdSet = new Set(selectedFixtureIds);
+    return selectedFixtureDayGroups.flatMap((dayGroup) =>
+      dayGroup.fixtures.filter((fixture) => selectedIdSet.has(fixture.id))
+    );
+  }, [selectedFixtureDayGroups, selectedFixtureIds]);
+
+  const selectedFixtureDaySummary = useMemo(() => {
+    if (!selectedFixtureDayGroups.length) {
+      return "Select up to 2 days";
+    }
+
+    if (selectedFixtureDayGroups.length === 1) {
+      return selectedFixtureDayGroups[0].dayLabel;
+    }
+
+    return selectedFixtureDayGroups.map((dayGroup) => dayGroup.dayLabel).join(" + ");
+  }, [selectedFixtureDayGroups]);
 
   const teamSheetManifestSections = useMemo(
     () => getTeamSheetManifestSections(selectedManifest || preparedTemplate?.mapping),
@@ -2719,6 +2791,10 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
   );
 
   const previewMode = useMemo(() => {
+    if (fixtureDayGroups.length) {
+      return "fixtures";
+    }
+
     if (standingsPoolPayloads.length) {
       return "standings";
     }
@@ -2748,7 +2824,61 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
     }
 
     return "json";
-  }, [groupColumns, headToHeadFormItems.length, headToHeadMatchItems.length, headToHeadSummaryItems.length, playerStatsTeamOptions.length, selectedDataType, standingsPoolPayloads.length, teamSheetTeamOptions.length, teamStatPaths, topPlayerItems.length]);
+  }, [fixtureDayGroups.length, groupColumns, headToHeadFormItems.length, headToHeadMatchItems.length, headToHeadSummaryItems.length, playerStatsTeamOptions.length, selectedDataType, standingsPoolPayloads.length, teamSheetTeamOptions.length, teamStatPaths, topPlayerItems.length]);
+
+  useEffect(() => {
+    if (previewMode !== "fixtures") {
+      setSelectedFixtureDayKeys([]);
+      setSelectedFixtureIds([]);
+      return;
+    }
+
+    const fallbackDayKeys = fixtureDayGroups.slice(0, 2).map((dayGroup) => dayGroup.dayKey);
+
+    setSelectedFixtureDayKeys((currentDayKeys) => {
+      const validDayKeys = currentDayKeys.filter((dayKey) =>
+        fixtureDayGroups.some((dayGroup) => dayGroup.dayKey === dayKey)
+      );
+
+      if (validDayKeys.length) {
+        return validDayKeys.slice(0, 2);
+      }
+
+      return fallbackDayKeys;
+    });
+
+    setSelectedFixtureIds((currentIds) => {
+      const selectedDayKeys = new Set(
+        (selectedFixtureDayKeys.length ? selectedFixtureDayKeys : fallbackDayKeys).slice(0, 2)
+      );
+      const validIds = new Set(
+        fixtureDayGroups
+          .filter((dayGroup) => selectedDayKeys.has(dayGroup.dayKey))
+          .flatMap((dayGroup) => dayGroup.fixtures.map((fixture) => fixture.id))
+      );
+      const nextIds = currentIds.filter((fixtureId) => validIds.has(fixtureId));
+
+      if (nextIds.length) {
+        return nextIds;
+      }
+
+      return fixtureDayGroups
+        .filter((dayGroup) => selectedDayKeys.has(dayGroup.dayKey))
+        .flatMap((dayGroup) => dayGroup.fixtures.map((fixture) => fixture.id));
+    });
+  }, [fixtureDayGroups, previewMode, selectedFixtureDayKeys]);
+
+  useEffect(() => {
+    if (previewMode !== "fixtures") {
+      return;
+    }
+
+    const validIds = new Set(
+      selectedFixtureDayGroups.flatMap((dayGroup) => dayGroup.fixtures.map((fixture) => fixture.id))
+    );
+
+    setSelectedFixtureIds((currentIds) => currentIds.filter((fixtureId) => validIds.has(fixtureId)));
+  }, [previewMode, selectedFixtureDayGroups]);
 
   useEffect(() => {
     if (previewMode !== "team-sheets") {
@@ -3052,6 +3182,11 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
       return;
     }
 
+    if (previewMode === "fixtures") {
+      setSelectedFieldPaths([]);
+      return;
+    }
+
     if (previewMode === "groups") {
       setSelectedFieldPaths(groupColumns);
       return;
@@ -3112,12 +3247,14 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
           teamOption: selectedPlayerStatsTeam,
         },
         previewMode,
+        selectedFixtureDayKeys,
+        selectedFixtureIds,
         standingsPoolPayloads,
         teamSheetManifestSections,
         teamSheetSelection,
         topPlayerItems,
       }),
-    [headToHeadFormItems, headToHeadMatchItems, headToHeadSummaryItems, preparedTemplate?.mapping, previewMode, selectedData, selectedFieldPaths, selectedMatchStatsSuffixByPath, selectedManifest, selectedPlayerStatsPlayer, selectedPlayerStatsTeam, standingsPoolPayloads, teamSheetManifestSections, teamSheetSelection, topPlayerItems]
+    [headToHeadFormItems, headToHeadMatchItems, headToHeadSummaryItems, preparedTemplate?.mapping, previewMode, selectedData, selectedFieldPaths, selectedFixtureDayKeys, selectedFixtureIds, selectedMatchStatsSuffixByPath, selectedManifest, selectedPlayerStatsPlayer, selectedPlayerStatsTeam, standingsPoolPayloads, teamSheetManifestSections, teamSheetSelection, topPlayerItems]
   );
 
   const filteredGroupsTable = useMemo(() => {
@@ -3217,15 +3354,21 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
     return Array.from(sections.values()).filter((section) => section.items.length);
   }, [headToHeadFormItems, previewMode, selectedFieldPathSet]);
 
-  const previewSelectionCount = useMemo(
-    () =>
-      previewMode === "team-sheets"
-        ? teamSheetSelectionCount
-        : previewMode === "standings"
-          ? standingsPoolPayloads.length
-          : selectedFieldPaths.length,
-    [previewMode, selectedFieldPaths.length, standingsPoolPayloads.length, teamSheetSelectionCount]
-  );
+  const previewSelectionCount = useMemo(() => {
+    if (previewMode === "team-sheets") {
+      return teamSheetSelectionCount;
+    }
+
+    if (previewMode === "standings") {
+      return standingsPoolPayloads.length;
+    }
+
+    if (previewMode === "fixtures") {
+      return selectedFixtureIds.length;
+    }
+
+    return selectedFieldPaths.length;
+  }, [previewMode, selectedFieldPaths.length, selectedFixtureIds.length, standingsPoolPayloads.length, teamSheetSelectionCount]);
 
   const homeTeamLabel = useMemo(
     () =>
@@ -3246,6 +3389,20 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
   );
 
   const titleText = useMemo(() => {
+    if (previewMode === "fixtures") {
+      const viewLabel = selectedFixtureView === "results" ? "Results" : "Fixtures";
+
+      if (selectedFixtureDayGroups.length === 1) {
+        return selectedFixtureDayGroups[0].dayLabel;
+      }
+
+      if (selectedFixtureDayGroups.length > 1) {
+        return `${selectedFixtureDayGroups.length} ${viewLabel} Days`;
+      }
+
+      return viewLabel;
+    }
+
     if (previewMode === "head-to-head") {
       const homeName = selectedData?.teams?.homeTeam?.name || "Home Team";
       const awayName = selectedData?.teams?.awayTeam?.name || "Away Team";
@@ -3282,9 +3439,18 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
     const seasonName = filteredSelectedData?.season?.name || selectedData?.season?.name || "Season";
 
     return `${competitionName} | ${seasonName}`;
-  }, [filteredSelectedData, previewMode, selectedData, selectedDataType?.dataType, selectedPlayerStatsPlayer?.primary, selectedPlayerStatsTeam?.teamData?.team?.name]);
+  }, [filteredSelectedData, previewMode, selectedData, selectedDataType?.dataType, selectedFixtureDayGroups, selectedFixtureView, selectedPlayerStatsPlayer?.primary, selectedPlayerStatsTeam?.teamData?.team?.name]);
 
   const subtitleText = useMemo(() => {
+    if (previewMode === "fixtures") {
+      const competitionName = selectedData?.competition?.name || selectedData?.competition?.seasonName;
+      const seasonName = selectedData?.season?.name;
+      const selectedCount = selectedFixtureIds.length ? `${selectedFixtureIds.length} selected` : null;
+      const timeZone = selectedData?.userTimeZone ? `Times in ${selectedData.userTimeZone}` : null;
+      const viewLabel = selectedFixtureView === "results" ? "Results" : "Fixtures";
+      return [competitionName, seasonName, viewLabel, selectedCount, timeZone].filter(Boolean).join(" | ");
+    }
+
     if (previewMode === "head-to-head") {
       const competitionName = selectedData?.matchInfo?.competition?.seasonName || selectedData?.matchInfo?.competition?.name;
       const seasonName = selectedData?.matchInfo?.season?.name;
@@ -3348,7 +3514,7 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
     }
 
     return segments.join(" | ");
-  }, [filteredSelectedData, previewMode, requiresRoundSelection, selectedData, selectedDataType?.type, selectedPlayerStatsPlayer, selectedRound]);
+  }, [filteredSelectedData, previewMode, requiresRoundSelection, selectedData, selectedDataType?.type, selectedFixtureIds.length, selectedFixtureView, selectedPlayerStatsPlayer, selectedRound]);
 
   useEffect(() => {
     let mounted = true;
@@ -3384,7 +3550,11 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
           return;
         }
 
-        setSelectedData(dataPayload);
+        setSelectedData(
+          isFixturesDataType(selectedDataType)
+            ? getFixturesByDay(dataPayload, { view: selectedFixtureView })
+            : dataPayload
+        );
         setShows(showList);
         setTemplates([]);
         setSelectedShowId("");
@@ -3425,8 +3595,10 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
     requiresStatSelection,
     selectedCoverage,
     selectedDataType,
+    selectedFixtureView,
     selectedRound,
     selectedStat,
+    setSelectedElementCollectionUri,
     state.selectedCompetitionId,
     state.selectedMatchId,
     state.selectedSeasonId,
@@ -3807,6 +3979,173 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
                         </section>
                       ))}
                     </div>
+                  </div>
+                </div>
+              ) : previewMode === "fixtures" ? (
+                <div className="page-creation-overlay__fixtures-layout">
+                  <div className="page-creation-overlay__field-toolbar">
+                    <div className="page-creation-overlay__field-actions">
+                      <label className="page-creation-overlay__selector">
+                        <span>View</span>
+                        <select value={selectedFixtureView} onChange={(event) => setSelectedFixtureView(event.target.value)}>
+                          {FIXTURE_VIEW_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <button
+                        type="button"
+                        className="page-creation-overlay__field-action"
+                        onClick={() =>
+                          setSelectedFixtureDayKeys(fixtureDayGroups.slice(0, 2).map((dayGroup) => dayGroup.dayKey))
+                        }
+                      >
+                        Select first 2 days
+                      </button>
+                      <button
+                        type="button"
+                        className="page-creation-overlay__field-action"
+                        onClick={() => {
+                          setSelectedFixtureDayKeys([]);
+                          setSelectedFixtureIds([]);
+                        }}
+                      >
+                        Clear all
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="page-creation-overlay__preview-block page-creation-overlay__fixtures-day-select">
+                    <div className="page-creation-overlay__panel-header">
+                      <h4>{selectedFixtureView === "results" ? "Result Days" : "Fixture Days"}</h4>
+                      <span>{`${selectedFixtureDayKeys.length}/2`}</span>
+                    </div>
+
+                    <p className="page-creation-overlay__helper-text">
+                      Select up to 2 days to combine on one page.
+                    </p>
+
+                    <details className="page-creation-overlay__fixtures-day-dropdown">
+                      <summary className="page-creation-overlay__fixtures-day-dropdown-toggle">
+                        <span className="page-creation-overlay__fixtures-day-dropdown-copy">
+                          <small>Selected days</small>
+                          <strong>{selectedFixtureDaySummary}</strong>
+                        </span>
+                      </summary>
+
+                      <div className="page-creation-overlay__fixtures-day-dropdown-menu">
+                        {fixtureDayGroups.map((dayGroup) => {
+                          const isSelected = selectedFixtureDaySet.has(dayGroup.dayKey);
+                          const hasReachedLimit = selectedFixtureDayKeys.length >= 2;
+
+                          return (
+                            <label
+                              className={`page-creation-overlay__fixtures-day-option ${
+                                isSelected ? "selected" : ""
+                              }`}
+                              key={dayGroup.dayKey}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={isSelected}
+                                disabled={!isSelected && hasReachedLimit}
+                                onChange={() => {
+                                  setSelectedFixtureDayKeys((currentDayKeys) => {
+                                    if (currentDayKeys.includes(dayGroup.dayKey)) {
+                                      const nextDayKeys = currentDayKeys.filter((dayKey) => dayKey !== dayGroup.dayKey);
+                                      setSelectedFixtureIds((currentIds) =>
+                                        currentIds.filter(
+                                          (fixtureId) =>
+                                            !dayGroup.fixtures.some((fixture) => fixture.id === fixtureId)
+                                        )
+                                      );
+                                      return nextDayKeys;
+                                    }
+
+                                    const nextDayKeys = [...currentDayKeys, dayGroup.dayKey].slice(0, 2);
+                                    setSelectedFixtureIds((currentIds) => [
+                                      ...new Set([
+                                        ...currentIds,
+                                        ...dayGroup.fixtures.map((fixture) => fixture.id),
+                                      ]),
+                                    ]);
+                                    return nextDayKeys;
+                                  });
+                                }}
+                              />
+                              <span className="page-creation-overlay__fixtures-day-option-copy">
+                                <small>{dayGroup.fixtures.length} fixtures</small>
+                                <strong>{dayGroup.dayLabel}</strong>
+                              </span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    </details>
+                  </div>
+
+                  <div className="page-creation-overlay__fixtures-groups">
+                    {selectedFixtureDayGroups.length ? (
+                      selectedFixtureDayGroups.map((dayGroup) => (
+                        <section className="page-creation-overlay__preview-block page-creation-overlay__fixtures-group" key={dayGroup.dayKey}>
+                          <div className="page-creation-overlay__panel-header">
+                            <h4>{dayGroup.dayLabel}</h4>
+                            <span>{dayGroup.fixtures.length}</span>
+                          </div>
+
+                          <div className="page-creation-overlay__fixtures-list">
+                            {dayGroup.fixtures.map((fixture) => {
+                              const isSelected = selectedFixtureIds.includes(fixture.id);
+
+                              return (
+                                <label
+                                  className={`page-creation-overlay__fixtures-item ${
+                                    isSelected ? "selected" : ""
+                                  }`}
+                                  key={fixture.id}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={isSelected}
+                                    onChange={() => {
+                                      setSelectedFixtureIds((currentIds) =>
+                                        currentIds.includes(fixture.id)
+                                          ? currentIds.filter((fixtureId) => fixtureId !== fixture.id)
+                                          : [...currentIds, fixture.id]
+                                      );
+                                    }}
+                                  />
+                                  <span className="page-creation-overlay__fixtures-item-body">
+                                    <span className="page-creation-overlay__fixtures-item-meta">
+                                      <strong>{fixture.label}</strong>
+                                      <small>
+                                        {[fixture.timeLabel, fixture.venueName, fixture.roundLabel].filter(Boolean).join(" | ")}
+                                      </small>
+                                    </span>
+                                    <span className="page-creation-overlay__fixtures-item-score">
+                                      <strong>{fixture.scoreLabel || fixture.statusLabel}</strong>
+                                      <small>{fixture.competitionName}</small>
+                                    </span>
+                                  </span>
+                                </label>
+                              );
+                            })}
+                          </div>
+                        </section>
+                      ))
+                    ) : (
+                      <section className="page-creation-overlay__preview-block page-creation-overlay__fixtures-empty-state">
+                        <div className="page-creation-overlay__panel-header">
+                          <h4>{selectedFixtureView === "results" ? "No Result Days Selected" : "No Fixture Days Selected"}</h4>
+                          <span>0</span>
+                        </div>
+                        <p className="empty-state">
+                          Choose up to 2 days above to load their {selectedFixtureView} lists here. Each selected day will appear with its date as the heading.
+                        </p>
+                      </section>
+                    )}
                   </div>
                 </div>
               ) : previewMode === "groups" ? (
@@ -4722,6 +5061,7 @@ export default function PageCreationOverlay({ selectedDataType, onClose, onConfi
               preparingTemplate ||
               submitting ||
               loadingTemplates ||
+              (previewMode === "fixtures" && (!selectedFixtureDayKeys.length || !selectedFixtureIds.length)) ||
               ((previewMode === "groups" ||
                 previewMode === "head-to-head" ||
                 previewMode === "match-stats" ||

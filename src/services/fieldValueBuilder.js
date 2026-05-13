@@ -112,9 +112,9 @@ function decodeHtmlEntities(value) {
 function normalizeFieldStringValue(value) {
   const decodedValue = decodeHtmlEntities(String(value));
   const normalizedLabelValue = {
-    "Post Match": "Full Time",
-    "First Half": "Half Time",
-    "Second Half": "Full Time",
+    "Post Match": "Full-Time",
+    "First Half": "Half-Time",
+    "Second Half": "Full-Time",
   }[decodedValue.trim()];
 
   if (normalizedLabelValue) {
